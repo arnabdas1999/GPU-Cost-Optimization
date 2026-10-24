@@ -1,0 +1,10 @@
+# Task splits. A task belongs to exactly one split. Held-out tasks must use a
+# different underlying bug/template from every dev task, not renamed variables.
+dev:
+  - retry_permanent
+  - retry_backoff
+  - config_merge
+  - config_env
+  - parse_duration
+  - parse_port_range
+heldout: []

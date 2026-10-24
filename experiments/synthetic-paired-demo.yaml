@@ -1,0 +1,25 @@
+# Saved local experiment manifest; the referenced raw runs are not committed.
+# Generate fresh paired trials before rendering a new report from an experiment.
+name: synthetic-paired-demo
+split: dev
+status: synthetic demo
+pairs:
+- baseline: runs/20261024T024105Z-synthetic-a6a2
+  candidate: runs/20261024T024128Z-synthetic-admission-active-2-d469
+  order:
+  - baseline
+  - candidate
+- baseline: runs/20261024T024213Z-synthetic-86c9
+  candidate: runs/20261024T024150Z-synthetic-admission-active-2-38f2
+  order:
+  - candidate
+  - baseline
+acceptance:
+  max_pooled_success_drop: 0
+  task_regression_tolerance: 0
+  max_task_regressions: 0
+  max_infra_error_increase: 0
+  max_wall_timeout_increase: 0
+  min_window_reduction_pct: 5.0
+  require_reduction_every_pair: true
+  max_p90_service_time_increase_pct: null

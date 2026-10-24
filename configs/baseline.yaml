@@ -1,0 +1,22 @@
+# Measured baseline. Budgets are pilot proposals: calibrate once, then freeze.
+extends: local.yaml
+name: baseline
+
+generation:
+  temperature: 0.2
+  top_p: 0.95
+  max_output_tokens_per_call: 512
+  seed: 42
+
+workload:
+  # 6 tasks x 4 independent attempts = 24 episodes: enough backlog to keep an
+  # episode cap of 8 full for part of the window (3x the cap).
+  repetitions: 4
+  max_steps: 6
+  context_window_tokens: 8192  # must equal server.args.max-model-len
+  max_observation_chars: 6000
+  episode_wall_timeout_s: 300
+
+execution:
+  max_active_episodes: 4
+  max_inflight_llm_requests: 4

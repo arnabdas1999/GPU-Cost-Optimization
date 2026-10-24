@@ -1,0 +1,49 @@
+# GPU host: model, server, CPU layout and price. Shared by every measured config.
+# Replace the REPLACE_* values on the rented host before a measured run, and
+# check every server flag against the CLI reference of the pinned vLLM release.
+name: local
+
+model:
+  kind: openai
+  base_url: http://127.0.0.1:8000/v1
+  served_name: coding-model
+  repository: Qwen/Qwen2.5-Coder-7B-Instruct
+  revision: REPLACE_WITH_RESOLVED_COMMIT
+  request_timeout_s: 120
+  max_request_retries: 1
+
+server:
+  # Restart before every run: the only reset that is independent of vLLM version.
+  cache_reset: restart
+  # The server is pinned to the reserved CPUs; tool workers get the others.
+  start_command: [taskset, -c, "0-3", vllm, serve, Qwen/Qwen2.5-Coder-7B-Instruct, "{args}"]
+  args:
+    revision: REPLACE_WITH_RESOLVED_COMMIT
+    tokenizer-revision: REPLACE_WITH_RESOLVED_COMMIT
+    served-model-name: coding-model
+    host: 127.0.0.1
+    port: 8000
+    dtype: bfloat16
+    max-model-len: 8192
+    gpu-memory-utilization: 0.90
+    seed: 0
+    # Recorded explicitly so the effective setting is never an unstated default.
+    enable-prefix-caching: true
+  reserved_cpus: [0, 1, 2, 3]
+  ready_timeout_s: 900
+  drain_timeout_s: 60
+
+tools:
+  executor: docker
+  image: rollout-cost-tools:py312
+  # Fixed aggregate tool CPU budget: 4 pinned workers, whatever the episode cap.
+  worker_cpus: [4, 5, 6, 7]
+  memory_mb: 512
+  test_timeout_s: 60
+  grader_timeout_s: 120
+
+cost:
+  allocation_hourly_rate: null  # e.g. 1.50; null keeps cost "unavailable"
+  currency: USD
+  rate_source: null  # provider + instance type + date the price was read
+  billing_granularity_seconds: null  # e.g. 1, 60 or 3600

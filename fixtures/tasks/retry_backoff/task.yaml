@@ -1,0 +1,10 @@
+id: retry_backoff
+family: retry
+title: Fix the backoff attempt limit
+description: |
+  `retry_with_backoff` in `src/backoff.py` makes one more call than
+  `max_attempts` allows, and its sleep schedule does not match the documented
+  one. Fix the function so that it follows its docstring exactly. Keep its
+  signature unchanged.
+initial_files: [src/backoff.py, tests/test_public.py]
+graded_paths: [src]

@@ -1,0 +1,10 @@
+id: config_merge
+family: config
+title: Respect explicit falsy overrides
+description: |
+  `merge_config` in `src/config_merge.py` combines default settings with user
+  overrides. Users report that setting a flag to `false` (or a number to `0`)
+  in their overrides has no effect. Fix `merge_config` so that it follows its
+  docstring. Keep its signature unchanged.
+initial_files: [src/config_merge.py, tests/test_public.py]
+graded_paths: [src]

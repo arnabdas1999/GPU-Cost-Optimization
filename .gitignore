@@ -1,0 +1,13 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
+.venv/
+.env
+.env.*
+!.env.example
+!.env.*.example
+uv.lock.bak
+runs/
+experiments/*/
+!experiments/README.md

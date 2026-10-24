@@ -1,0 +1,15 @@
+# Exercises the sweep/selection code path without a GPU. SYNTHETIC.
+# synthetic.yaml itself uses 3 active episodes and 2 in-flight requests.
+name: synthetic-admission
+base: synthetic.yaml
+split: dev
+baseline_variant: active-3
+variants:
+  - name: active-1
+    overrides: {execution: {max_active_episodes: 1, max_inflight_llm_requests: 1}}
+  - name: active-3
+    overrides: {}
+  - name: active-6
+    overrides: {execution: {max_active_episodes: 6, max_inflight_llm_requests: 2}}
+acceptance:
+  min_window_reduction_pct: 5.0

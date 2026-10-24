@@ -1,0 +1,10 @@
+id: parse_duration
+family: parsing
+title: Reject malformed durations
+description: |
+  `parse_duration` in `src/duration.py` converts strings such as "1h30m" to
+  seconds. It silently accepts malformed input: "1h30" is read as one hour and
+  "abc" as zero seconds. Fix `parse_duration` so that it follows its docstring.
+  Keep its signature unchanged.
+initial_files: [src/duration.py, tests/test_public.py]
+graded_paths: [src]

@@ -1,0 +1,11 @@
+id: config_env
+family: config
+title: Parse boolean environment overrides
+description: |
+  `apply_env_overrides` in `src/env_config.py` lets operators override
+  settings with environment variables. Setting `APP_DEBUG=false` crashes the
+  service, and numeric flags are not converted to the right type. Fix
+  `apply_env_overrides` so that it follows its docstring. Keep its signature
+  unchanged.
+initial_files: [src/env_config.py, tests/test_public.py]
+graded_paths: [src]

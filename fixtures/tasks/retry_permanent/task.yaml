@@ -1,0 +1,10 @@
+id: retry_permanent
+family: retry
+title: Stop retrying permanent errors
+description: |
+  The job runner uses `call_with_retry` in `src/retry.py` to retry flaky
+  operations. Jobs that fail with a permanent error are being attempted
+  repeatedly instead of failing straight away. Fix `call_with_retry` so that it
+  follows its docstring. Keep its signature unchanged.
+initial_files: [src/retry.py, tests/test_public.py]
+graded_paths: [src]

@@ -1,0 +1,35 @@
+# Runs on any machine without a GPU: scripted model, local (unisolated) executor.
+# SYNTHETIC: verifies software behavior; its timings are not evidence of GPU efficiency.
+name: synthetic
+
+model:
+  kind: scripted
+  scripted_policy: mixed
+  scripted_base_latency_s: 0.15
+  scripted_per_token_latency_s: 0.0005
+  scripted_contention: 0.3
+
+server:
+  cache_reset: none
+  warmup_file: null
+
+generation:
+  max_output_tokens_per_call: 512
+
+workload:
+  repetitions: 2
+  max_steps: 6
+  episode_wall_timeout_s: 120
+
+execution:
+  max_active_episodes: 3
+  max_inflight_llm_requests: 2
+
+tools:
+  executor: local
+  workers: 2
+
+cost:
+  allocation_hourly_rate: 1.50
+  rate_source: illustrative placeholder, not a quote
+  billing_granularity_seconds: 60

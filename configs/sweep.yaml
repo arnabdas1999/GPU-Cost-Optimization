@@ -1,0 +1,19 @@
+# Bounded development sweep: at most 4 candidates besides the baseline.
+# Variants may change only tunable keys (episode/request caps and the listed
+# vLLM scheduler flags); everything else is protected.
+name: dev-admission
+base: baseline.yaml
+split: dev
+baseline_variant: active-4
+variants:
+  - name: active-2
+    overrides: {execution: {max_active_episodes: 2, max_inflight_llm_requests: 2}}
+  - name: active-4
+    overrides: {}
+  - name: active-8
+    overrides: {execution: {max_active_episodes: 8, max_inflight_llm_requests: 4}}
+acceptance:
+  max_pooled_success_drop: 0
+  max_task_regressions: 0
+  task_regression_tolerance: 1  # per task, out of 4 repetitions in a single dev trial
+  min_window_reduction_pct: 5.0

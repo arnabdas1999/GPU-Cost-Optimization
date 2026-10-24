@@ -1,0 +1,11 @@
+id: parse_port_range
+family: parsing
+title: Validate port ranges
+description: |
+  `parse_port_range` in `src/ports.py` parses firewall port specifications
+  such as "8000-8010". It accepts reversed ranges, out-of-range ports and
+  stray characters, which later produce confusing errors. Fix
+  `parse_port_range` so that it follows its docstring. Keep its signature
+  unchanged.
+initial_files: [src/ports.py, tests/test_public.py]
+graded_paths: [src]
