@@ -5,8 +5,10 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import math
 import os
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
@@ -16,7 +18,8 @@ from pathlib import Path
 import httpx
 import yaml
 
-from .analysis import DEFAULT_ACCEPTANCE, compare_runs, evaluate_acceptance, load_run
+from .analysis import (DEFAULT_ACCEPTANCE, RunFormatError, compare_runs, evaluate_acceptance, evaluate_experiment_file,
+                       load_run, portable, verdict)
 from .config import TUNABLE_KEYS, Config, ConfigError, flatten, load_config
 from .fixtures import build_cohort, load_split
 from .grading import validate_task
@@ -119,15 +122,58 @@ def cmd_doctor(args) -> int:
     gpu = query_gpu_inventory(cfg.telemetry.nvidia_smi)
     _print_check("ok" if gpu["available"] else "warn", "gpu", "; ".join(gpu.get("gpus", [])) or gpu.get("reason", ""))
 
+    port = cfg.telemetry.live_metrics_port
+    if port is not None:
+        try:
+            import prometheus_client  # noqa: F401
+
+            with socket.socket() as s:
+                s.bind((cfg.telemetry.live_metrics_host, port))
+            _print_check("ok", "live exporter", f"port {port} free; prometheus-client installed")
+        except ImportError:
+            _print_check("FAIL", "live exporter", "telemetry.live_metrics_port is set: run `uv sync --extra dashboard`")
+            failures += 1
+        except OSError as exc:
+            _print_check("warn", "live exporter", f"port {port} busy ({exc}); live metrics would be unavailable")
+
     if cfg.synthetic:
         _print_check("ok", "model", f"scripted policy '{cfg.model.scripted_policy}' (synthetic)")
     else:
-        failures += asyncio.run(_doctor_server(cfg))
+        failures += asyncio.run(_doctor_server(cfg, start_server=args.start_server))
     print("doctor: " + ("all required checks passed" if not failures else f"{failures} required check(s) failed"))
     return 0 if not failures else 1
 
 
-async def _doctor_server(cfg: Config) -> int:
+async def _doctor_server(cfg: Config, start_server: bool = False) -> int:
+    if not start_server:
+        return await _doctor_endpoint(cfg)
+    from .server import ServerController
+    from .telemetry import EventRecorder
+
+    with tempfile.TemporaryDirectory(prefix="rc-doctor-") as tmp:
+        recorder = EventRecorder(Path(tmp) / "events.jsonl", "doctor")
+        controller = ServerController(cfg, Path(tmp), recorder, None)
+        try:
+            started = await controller.restart()
+            _print_check("ok", "server start", f"healthy after {started['startup_s']:.1f}s: {' '.join(started['command'])[:160]}")
+        except Exception as exc:  # noqa: BLE001
+            _print_check("FAIL", "server start", f"{exc}; log: {Path(tmp) / 'server.log'}")
+            log = Path(tmp) / "server.log"
+            if log.exists():
+                print("    " + "\n    ".join(log.read_text(errors="replace").splitlines()[-15:]))
+            controller._stop()
+            recorder.close()
+            return 1
+        try:
+            return await _doctor_endpoint(cfg)
+        finally:
+            controller._stop()
+            if controller._log:
+                controller._log.close()
+            recorder.close()
+
+
+async def _doctor_endpoint(cfg: Config) -> int:
     failures = 0
     root = server_root(cfg.model.base_url)
     async with httpx.AsyncClient(timeout=10) as http:
@@ -146,8 +192,18 @@ async def _doctor_server(cfg: Config) -> int:
             present = sorted(k for k, v in signals.items() if v is not None)
             absent = sorted(k for k, v in signals.items() if v is None)
             _print_check("ok" if present else "warn", "server metrics", f"present={present} absent={absent}")
+            required = ("requests_running", "requests_waiting")
+            unusable = [key for key in required if signals.get(key) is None
+                        or not math.isfinite(signals[key]) or signals[key] < 0]
+            if unusable:
+                _print_check("FAIL", "idle gauges", f"missing or invalid {unusable}; "
+                             "running/waiting request gauges are required to verify server idleness")
+                failures += 1
+            else:
+                _print_check("ok", "idle gauges", "running/waiting request gauges available")
         except httpx.HTTPError as exc:
-            _print_check("warn", "server metrics", str(exc))
+            _print_check("FAIL", "server metrics", f"{exc}; request gauges are required to verify server idleness")
+            failures += 1
     client = make_client(cfg, [])
     try:
         ctx = RequestContext("doctor", "doctor", "doctor", "doctor-0", 0, cfg.generation.seed)
@@ -235,13 +291,13 @@ def cmd_sweep(args) -> int:
         if name == baseline_name:
             continue
         comp = compare_runs(baseline, load_run(run_dir))
-        results[name] = {"run": str(run_dir), "comparison": comp, "acceptance": evaluate_acceptance([comp], rule)}
+        results[name] = {"run": portable(run_dir), "comparison": comp, "acceptance": evaluate_acceptance([comp], rule)}
     accepted = {n: r for n, r in results.items() if r["acceptance"]["accepted"]}
     chosen = min(accepted, key=lambda n: results[n]["comparison"]["candidate_summary"]["window_s"]) if accepted else baseline_name
     chosen_cfg = load_run(runs[chosen]).manifest["config"]
     (out_dir / "chosen.yaml").write_text(yaml.safe_dump(chosen_cfg, sort_keys=False), encoding="utf-8")
     selection = {"sweep": spec["name"], "split": split, "baseline_variant": baseline_name, "chosen": chosen,
-                 "runs": {n: str(p) for n, p in runs.items()},
+                 "runs": {n: portable(p) for n, p in runs.items()},
                  "reason": "lowest allocated window among accepted candidates" if accepted else "no candidate met the acceptance rule; baseline kept",
                  "note": "Development selection from one trial per variant; validate on held-out tasks with paired trials."}
     (out_dir / "selection.json").write_text(json.dumps({**selection, "results": results}, indent=2, default=str), encoding="utf-8")
@@ -268,7 +324,7 @@ def cmd_paired(args) -> int:
             print(f"== trial {trial + 1}/{args.trials}: {role}")
             run_dir, summary = run_sync(cfg, args.split, Path(args.runs_dir), label=f"paired:{name}:t{trial}:{role}")
             _print_summary(run_dir, summary)
-            produced[role] = run_dir.as_posix()
+            produced[role] = portable(run_dir)
         pairs.append({"baseline": produced["baseline"], "candidate": produced["candidate"],
                       "order": [role for role, _ in order]})
     rule = yaml.safe_load(Path(args.acceptance).read_text(encoding="utf-8")) if args.acceptance else {}
@@ -298,23 +354,56 @@ def cmd_compare(args) -> int:
 
 
 def _report_experiment(path: Path, reports_dir: Path) -> int:
-    exp = yaml.safe_load(path.read_text(encoding="utf-8"))
-    root = path.resolve().parent
-    while not (root / "pyproject.toml").exists() and root.parent != root:
-        root = root.parent
-    comparisons = []
-    synthetic = False
-    for pair in exp["pairs"]:
-        base, cand = load_run(root / pair["baseline"]), load_run(root / pair["candidate"])
-        synthetic |= base.manifest["synthetic"] or cand.manifest["synthetic"]
-        comparisons.append(compare_runs(base, cand))
-    acceptance = evaluate_acceptance(comparisons, exp.get("acceptance"))
-    text = render_experiment(exp["name"], comparisons, acceptance, {"status": exp.get("status"), "synthetic": synthetic})
+    ev = evaluate_experiment_file(path)
+    comparisons, acceptance = ev.comparisons["candidate"], ev.acceptance["candidate"]
+    text = render_experiment(ev.name, comparisons, acceptance, {"status": ev.meta.get("status"), "synthetic": ev.synthetic})
     reports_dir.mkdir(parents=True, exist_ok=True)
-    out = reports_dir / f"{exp['name']}.md"
+    out = reports_dir / f"{ev.name}.md"
     out.write_text(text, encoding="utf-8")
-    verdict = "A/A CALIBRATION" if acceptance["aa_calibration"] else ("ACCEPTED" if acceptance["accepted"] else "NOT ACCEPTED")
-    print(f"{verdict}: report written to {out}")
+    print(f"{verdict(acceptance)}: report written to {out}")
+    return 0
+
+
+DEFAULT_DB_URL = "postgresql://rollout:rollout@127.0.0.1:55432/rollout"
+
+
+def cmd_pin(args) -> int:
+    from .pinning import split_cpus, write_pinned
+
+    if not args.rehearsal and not args.revision:
+        raise ConfigError("--revision is required (resolve the model commit sha first)")
+    if not (Path(args.configs_dir) / "lightning.yaml").exists():
+        raise ConfigError(f"{args.configs_dir}/lightning.yaml not found; run from the repository root")
+    if args.cpus:
+        cpus = [int(c) for c in args.cpus.split(",") if c.strip()]
+    else:
+        cpus = sorted(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else list(range(os.cpu_count() or 1))
+    written = write_pinned(Path(args.configs_dir), revision=args.revision or "rehearsal", vllm_bin=args.vllm, cpus=cpus,
+                           rate=args.rate, rate_source=args.rate_source, executor=args.executor, rehearsal=args.rehearsal,
+                           model_repo=args.model_repo)
+    reserved, workers = split_cpus(cpus)
+    print(f"CPUs {cpus}: server/runner {reserved or 'unpinned'}, tool workers {workers or 'unpinned'}")
+    for path in written:
+        print(f"wrote {path}")
+    if args.rate is None:
+        print("warning: no --rate given; cost will be reported as unavailable")
+    return 0
+
+
+def cmd_export(args) -> int:
+    from .export import ExportError, export
+
+    try:
+        result = export(args.db, Path(args.runs_dir), Path(args.experiments_dir), reset=args.reset)
+    except ExportError as exc:
+        print(f"export failed: {exc}", file=sys.stderr)
+        return 1
+    except Exception as exc:  # noqa: BLE001 - connection errors from the driver
+        print(f"export failed: {type(exc).__name__}: {exc}", file=sys.stderr)
+        return 1
+    print(f"exported {result['runs']} run(s) and {result['experiments']} experiment/sweep(s): {result['rows']} rows")
+    for item in result["skipped"]:
+        print(f"  skipped {item}")
     return 0
 
 
@@ -343,7 +432,21 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("doctor", help="check configuration, fixtures, executor, GPU and model server")
     p.add_argument("--config", required=True)
     p.add_argument("--split", default="dev")
+    p.add_argument("--start-server", action="store_true",
+                   help="start the server with server.start_command for the checks, then stop it")
     p.set_defaults(func=cmd_doctor)
+
+    p = sub.add_parser("pin", help="write configs/*.pinned.yaml for a GPU session (used by lightning-setup.sh)")
+    p.add_argument("--model-repo", help="model repository to serve (default: model.repository in configs/lightning.yaml)")
+    p.add_argument("--revision", help="resolved model commit sha (required unless --rehearsal)")
+    p.add_argument("--vllm", default="vllm", help="path to the vllm executable")
+    p.add_argument("--cpus", help="comma-separated CPUs to split (default: those available to this process)")
+    p.add_argument("--rate", type=float, help="allocation price per hour")
+    p.add_argument("--rate-source", help="where the price came from (provider, instance, date)")
+    p.add_argument("--executor", choices=["local", "docker"], default="local")
+    p.add_argument("--rehearsal", action="store_true", help="use the mock vLLM server instead of vLLM")
+    p.add_argument("--configs-dir", default="configs")
+    p.set_defaults(func=cmd_pin)
 
     p = sub.add_parser("run", help="run one cohort under one configuration")
     p.add_argument("--config", required=True)
@@ -385,15 +488,34 @@ def build_parser() -> argparse.ArgumentParser:
     group.add_argument("--experiment")
     p.add_argument("--reports-dir", default="reports")
     p.set_defaults(func=cmd_report)
+
+    p = sub.add_parser("export", help="load runs, sweeps and experiments into PostgreSQL for Grafana")
+    p.add_argument("--db", default=os.environ.get("RC_DB_URL", DEFAULT_DB_URL),
+                   help="PostgreSQL URL (default: $RC_DB_URL or the docker compose database)")
+    p.add_argument("--runs-dir", default="runs")
+    p.add_argument("--experiments-dir", default="experiments")
+    p.add_argument("--reset", action="store_true", help="drop and recreate all tables first")
+    p.set_defaults(func=cmd_export)
+
+    # Listed for --help; arguments are handled by mock_server.main (see main()).
+    sub.add_parser("mock-server", help="serve a mock vLLM endpoint for GPU-free end-to-end runs (SYNTHETIC)", add_help=False)
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
+    argv = sys.argv[1:] if argv is None else argv
+    if argv and argv[0] == "mock-server":
+        from .mock_server import main as mock_main
+
+        return mock_main(argv[1:])
     args = build_parser().parse_args(argv)
     try:
         return args.func(args)
     except ConfigError as exc:
         print(f"configuration error: {exc}", file=sys.stderr)
+        return 2
+    except RunFormatError as exc:
+        print(f"run artifact error: {exc}", file=sys.stderr)
         return 2
 
 

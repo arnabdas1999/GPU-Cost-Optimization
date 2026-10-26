@@ -253,6 +253,7 @@ class Episode:
             r.tool_wait_s += time.monotonic() - waiting
             raise _Stop("wall_timeout", "expired while waiting for a tool slot") from None
         r.tool_wait_s += time.monotonic() - waiting
+        self.emit("tool_slot_acquired", slot=slot.index, cpu=slot.cpu, wait_s=round(time.monotonic() - waiting, 6))
         started = time.monotonic()
         test_timeout = self.cfg.tools.test_timeout_s
         remaining = self.deadline - started

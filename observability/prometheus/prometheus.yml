@@ -1,0 +1,16 @@
+# Shared by the docker compose stack and scripts/observability-native.sh.
+# Targets are file-based (relative to this file) so each deployment supplies its own hosts.
+global:
+  scrape_interval: 2s
+  scrape_timeout: 2s
+  evaluation_interval: 15s
+
+scrape_configs:
+  - job_name: rollout-runner
+    file_sd_configs:
+      - files: [targets/runner.json]
+        refresh_interval: 10s
+  - job_name: vllm
+    file_sd_configs:
+      - files: [targets/vllm.json]
+        refresh_interval: 10s

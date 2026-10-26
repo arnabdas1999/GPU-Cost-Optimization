@@ -14,7 +14,7 @@ import shutil
 import subprocess
 import time
 from collections import defaultdict
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -32,8 +32,12 @@ class EventRecorder:
         self.path = path
         self.run_id = run_id
         self.origin = time.monotonic() if origin is None else origin
+        # Wall-clock time of the monotonic origin: absolute time = origin_utc + t.
+        self.origin_utc = (datetime.now(timezone.utc) - timedelta(seconds=time.monotonic() - self.origin)).isoformat()
         self._seq: dict[str, int] = defaultdict(int)
         self._fh = path.open("a", encoding="utf-8")
+        # Observers (the live exporter) see every event after it is written.
+        self.listeners: list = []
 
     def now(self) -> float:
         return time.monotonic() - self.origin
@@ -56,6 +60,8 @@ class EventRecorder:
             event["data"] = data
         self._fh.write(json.dumps(event, default=str) + "\n")
         self._fh.flush()
+        for listener in self.listeners:
+            listener(event)
         return event
 
     def close(self) -> None:
@@ -132,6 +138,7 @@ class _Sampler:
         self.interval_s = interval_s
         self.recorder = recorder
         self.samples = 0
+        self.last: dict | None = None
         self.errors: list[str] = []
         self._task: asyncio.Task | None = None
         self._stop = asyncio.Event()
@@ -152,6 +159,7 @@ class _Sampler:
                     fh.write(json.dumps(row) + "\n")
                     fh.flush()
                     self.samples += 1
+                    self.last = row
                 try:
                     await asyncio.wait_for(self._stop.wait(), self.interval_s)
                 except TimeoutError:

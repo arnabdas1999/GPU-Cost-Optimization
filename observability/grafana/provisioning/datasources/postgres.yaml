@@ -1,0 +1,16 @@
+apiVersion: 1
+datasources:
+  - name: Rollout history
+    uid: rc-postgres
+    type: grafana-postgresql-datasource
+    access: proxy
+    url: ${POSTGRES_HOST}
+    user: ${POSTGRES_USER}
+    editable: false
+    jsonData:
+      database: ${POSTGRES_DB}
+      sslmode: disable
+      postgresVersion: 1600
+      timescaledb: false
+    secureJsonData:
+      password: ${POSTGRES_PASSWORD}

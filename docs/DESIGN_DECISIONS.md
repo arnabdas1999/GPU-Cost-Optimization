@@ -127,6 +127,24 @@ paired trials:
   trial-to-trial spread** of either side (see below).
 - Protected settings, the cohort and the synthetic flag must match. Otherwise the
   comparison is invalid.
+- Each run must be complete and contain exactly one terminal record for every declared
+  episode. Summary values used by the decision are checked against values recomputed
+  from episode records and the manifest timeline. Missing, duplicate or unexpected
+  records and inconsistent summaries cannot pass acceptance.
+- Real-server idleness must be verified both before and after the cohort. Missing
+  metrics or a busy server make the comparison invalid while preserving run artifacts
+  for inspection. Scripted and mock runs remain explicitly synthetic.
+
+Restart mode checks that the endpoint is unused after stop, before launching a child.
+Readiness also checks the child's exit status before and after each health request, so
+an existing healthy server cannot conceal a failed launch. Regression tests for these
+guards are in `tests/test_run_validation.py` and `tests/test_server.py`.
+
+`doctor` requires usable running/waiting request gauges even when optional telemetry
+is absent. Preparation stops before starting the cohort if idleness is unverified.
+On Linux the server starts in its own session, and shutdown signals the whole process
+group, including workers whose API parent has already exited. Surviving workers are
+force-stopped and the parent is reaped before another run can start.
 
 *Test:* `test_comparison_detects_task_swaps_hidden_by_equal_totals`. The baseline solves
 A/B and the candidate solves B/C: equal totals, and the comparison is rejected.
@@ -170,6 +188,78 @@ start → graded) is reported, but no decision depends on it.
   invalidating comparisons.
 - **The local executor has no isolation.** It exists for scripted development runs on
   machines without Docker. `doctor` warns about it, and the measured configs use Docker.
+
+## Observability and compatibility
+
+**Two stores, one source of values.** Live metrics go to Prometheus and history goes to
+PostgreSQL, because they answer different questions. "Is the run healthy right now?"
+needs scraping. "Compare these runs" needs SQL over episodes, spans and comparisons.
+Neither store recomputes anything. The exporter derives its numbers from the run's own
+event stream, plus read-only views of the semaphore and tool pool. `export` stores the
+same summaries, comparisons and acceptance results the Markdown reports use, through
+`analysis.evaluate_experiment_file` and `evaluate_sweep_selection`.
+
+**Observation only.** The exporter can't change scheduling, and a busy port is recorded
+rather than failing the run. Its settings are descriptive, not protected, so turning
+live metrics on doesn't invalidate a comparison.
+
+**No plugins, no dcgm-exporter.** Dashboards use built-in Grafana panels only. GPU
+gauges come from the runner's own nvidia-smi sampler, so nothing on the GPU host needs
+Docker.
+
+**Single sources of truth, enforced by tests** (`tests/test_observability.py`):
+
+| Shared item | Defined in | Checked against |
+| --- | --- | --- |
+| Live metric names | `contract.LIVE_METRICS` | Exporter output during a run; every PromQL query |
+| vLLM metric names | `contract.VLLM_DASHBOARD_METRICS`, `telemetry.SERVER_SIGNALS` | Dashboard queries; mock server output |
+| Timeline state codes | `contract.STATE_CODES` | `spans.py`; the timeline's value mappings |
+| Export tables | `src/rollout_cost/schema.sql` (versioned) | Row builders; every dashboard SQL query (and executed against Postgres when `RC_TEST_PG` is set) |
+| Datasource UIDs | `contract.DATASOURCE_UIDS` | Provisioning files and every dashboard reference |
+| Image/binary versions | `observability/versions.env` | `compose.yaml` defaults; the native script |
+| Dashboard JSON | `observability/build_dashboards.py` | Committed JSON (stale files fail) |
+| Run artifacts | `contract.RUN_FORMAT_VERSION` | `load_run` rejects unknown versions; stored paths are relative POSIX |
+
+**Mock vLLM server.** `rollout-cost mock-server` serves streaming chat completions
+(driven by the scripted policies), `/health`, `/version` (`"mock": true`), `/metrics` with
+vLLM's names, and `/reset_prefix_cache`. It emulates `max-num-seqs` queueing, prefix-cache
+reuse and client-disconnect aborts. That exercises the real HTTP client, the server
+restart/warm-up/drain lifecycle and the vLLM dashboard panels without a GPU. The runner
+detects the mock and labels the run SYNTHETIC.
+
+**Compatibility matrix** (as verified on 2026-10-25)
+
+| Environment | Executor | Observability | Verified by |
+| --- | --- | --- | --- |
+| Windows laptop | local (unpinned) | Docker Compose (Grafana 11.6, Prometheus 3.1, PostgreSQL 16.4) | Full suite including Postgres integration; mock-vLLM run scraped by Prometheus in Docker; every panel query of all four dashboards returns data through Grafana (`scripts/verify_dashboards.py`) |
+| Linux without Docker (Lightning Studio) | local, CPU-pinned | `observability-native.sh` | `scripts/rehearse-lightning.sh` in `ubuntu:24.04`: setup `--rehearsal`, `doctor --start-server`, smoke and full pinned runs, Prometheus storing runner and vLLM metrics, runner pinned to the reserved CPUs, the Linux-only affinity test, and the Live dashboard checked from the laptop |
+| Linux to Windows artifacts | — | — | Rehearsal run directories exported and loaded on Windows unchanged |
+| Linux with Docker | docker | Docker Compose | The setup script detects the daemon. Prometheus in compose reaches host services through `host-gateway`, so on Linux the model server must listen on an address the bridge can reach. vLLM's `host: 127.0.0.1` can't be reached that way, so prefer the native script there |
+| Real GPU + vLLM | either | either | Only in the Lightning session (see the runbook's list) |
+
+**Runner CPU pinning.** When `server.reserved_cpus` is set on Linux, the runner pins itself
+to those CPUs for the run. The tool-worker CPUs then do nothing but tests and grading.
+The applied affinity is recorded in `run.json`.
+
+**Thread-safe local tool pinning.** Local tool commands are launched through `taskset`,
+which applies the slot's CPU before executing Python. The runner does not use Python's
+`preexec_fn`, which can deadlock when the live exporter or a subprocess watcher has
+started threads. If `taskset` is missing, pinned execution fails as an infrastructure
+error instead of silently running without affinity. `tests/test_lightning_setup.py`
+checks command launch and missing-tool behavior; the Linux affinity test checks the
+child's actual CPU set.
+
+**Lightning preparation and model selection.** `lightning-setup.sh --prepare` installs
+dependencies and downloads the selected model on CPU without starting GPU services.
+Normal setup always synchronizes the requested vLLM release and verifies its installed
+metadata; the default environment path includes the version. The script passes
+`MODEL_REPO` to `pin --model-repo`, so the downloaded model, served model and recorded
+tokenizer revision agree. Shell regression tests exercise preparation, reused
+environments, version mismatch failures and model selection without downloading vLLM.
+
+**Local PostgreSQL servers.** The compose database publishes on host port 55432, because
+5432 and 5433 are often taken by local installations (including on the development
+machine). Override it with `POSTGRES_HOST_PORT`.
 
 ## Effort estimate (revised)
 

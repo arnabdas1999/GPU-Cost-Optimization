@@ -1,0 +1,76 @@
+# Grafana + Prometheus + PostgreSQL for Rollout Cost Lab.
+#   docker compose -f observability/compose.yaml up -d
+# Grafana: http://127.0.0.1:3000 (anonymous viewing; admin login from .env).
+# Image tag defaults must match observability/versions.env (checked by tests).
+name: rollout-cost
+
+services:
+  postgres:
+    image: postgres:${POSTGRES_VERSION:-16.4}
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-rollout}
+      POSTGRES_USER: ${POSTGRES_USER:-rollout}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-rollout}
+    # 55432 on the host (not 5432/5433) so locally installed PostgreSQL servers are left alone.
+    ports:
+      - "127.0.0.1:${POSTGRES_HOST_PORT:-55432}:5432"
+    volumes:
+      - pg-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-rollout} -d ${POSTGRES_DB:-rollout}"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  prometheus:
+    image: prom/prometheus:v${PROMETHEUS_VERSION:-3.1.0}
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=30d
+    volumes:
+      - ./prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./prometheus/targets/docker:/etc/prometheus/targets:ro
+      - prom-data:/prometheus
+    ports:
+      - "127.0.0.1:9090:9090"
+    # The runner and the model server run on the host, not in this network.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana-oss:${GRAFANA_VERSION:-11.6.0}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      prometheus:
+        condition: service_started
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:-admin}
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /etc/rollout-cost/dashboards/history/runs-overview.json
+      GF_ANALYTICS_REPORTING_ENABLED: "false"
+      GF_ANALYTICS_CHECK_FOR_UPDATES: "false"
+      # Read by the provisioning files (shared with the native deployment).
+      RC_DASHBOARDS_DIR: /etc/rollout-cost/dashboards
+      PROMETHEUS_URL: http://prometheus:9090
+      POSTGRES_HOST: postgres:5432
+      POSTGRES_DB: ${POSTGRES_DB:-rollout}
+      POSTGRES_USER: ${POSTGRES_USER:-rollout}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-rollout}
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./grafana/dashboards:/etc/rollout-cost/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "127.0.0.1:3000:3000"
+    restart: unless-stopped
+
+volumes:
+  pg-data:
+  prom-data:
+  grafana-data:

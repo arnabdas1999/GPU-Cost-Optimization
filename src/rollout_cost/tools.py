@@ -143,9 +143,14 @@ class ToolPool:
             self._free.put_nowait(slot)
         self.in_use = 0
         self.max_in_use = 0
+        self.waiting = 0
 
     async def acquire(self) -> ToolSlot:
-        slot = await self._free.get()
+        self.waiting += 1
+        try:
+            slot = await self._free.get()
+        finally:
+            self.waiting -= 1
         self.in_use += 1
         self.max_in_use = max(self.max_in_use, self.in_use)
         return slot
@@ -174,17 +179,27 @@ def _decode(data: bytes) -> str:
     return data[:OUTPUT_LIMIT_BYTES].decode("utf-8", errors="replace").replace("\r\n", "\n")
 
 
+def cpu_pinning_supported() -> bool:
+    return hasattr(os, "sched_setaffinity")
+
+
 class LocalExecutor:
-    """Runs commands as host subprocesses. No isolation: development only."""
+    """Runs commands as host subprocesses. No container isolation.
+
+    On Linux each process is pinned to its tool slot's CPU, so the fixed
+    aggregate tool CPU budget holds even without Docker (e.g. a Lightning AI
+    Studio). On other platforms slots bound concurrency but are not pinned.
+    """
 
     name = "local"
-    isolation = "none (development only; do not run untrusted model output)"
+    isolation = "none (no container; generated code runs as the runner's user)"
 
     def __init__(self) -> None:
         self._live: set[asyncio.subprocess.Process] = set()
 
     def describe(self) -> dict:
-        return {"name": self.name, "isolation": self.isolation, "python": sys.executable, "python_version": sys.version.split()[0]}
+        return {"name": self.name, "isolation": self.isolation, "python": "python", "python_version": sys.version.split()[0],
+                "cpu_pinning": cpu_pinning_supported()}
 
     def _env(self) -> dict[str, str]:
         env = {"PYTHONDONTWRITEBYTECODE": "1", "PYTHONIOENCODING": "utf-8", "PATH": os.environ.get("PATH", "")}
@@ -210,6 +225,13 @@ class LocalExecutor:
 
     async def run(self, workdir: Path, command: Sequence[str], timeout_s: float, slot: ToolSlot, label: str) -> ProcessResult:
         argv = [sys.executable if part == "python" else part for part in command]
+        if slot.cpu is not None and cpu_pinning_supported():
+            taskset = shutil.which("taskset")
+            if taskset is None:
+                raise ExecutorError("CPU-pinned local execution requires taskset (util-linux).")
+            # Apply affinity in an executable, not a Python preexec_fn: the live
+            # exporter and subprocess watchers may already have started threads.
+            argv = [taskset, "--cpu-list", str(slot.cpu), *argv]
         kwargs: dict = {}
         if os.name == "nt":
             kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP

@@ -1,0 +1,1 @@
+[{"targets": ["host.docker.internal:9400"], "labels": {"deployment": "docker"}}]

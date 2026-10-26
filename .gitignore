@@ -11,3 +11,6 @@ uv.lock.bak
 runs/
 experiments/*/
 !experiments/README.md
+rehearsal-out/
+vllm-packages.txt
+vllm-serve-help.txt

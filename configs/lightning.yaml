@@ -1,0 +1,30 @@
+# Lightning AI Studio (single L4, 24 GB). scripts/lightning-setup.sh writes
+# configs/lightning.pinned.yaml (extends this file) with the resolved model
+# revision, the vLLM path and the CPU split for the Studio's vCPU count.
+# Run measured commands with the pinned file.
+extends: baseline.yaml
+name: lightning
+
+server:
+  # Replaced in the pinned file with the venv path and a taskset CPU range.
+  start_command: [vllm, serve, Qwen/Qwen2.5-Coder-7B-Instruct, "{args}"]
+  stop_command: null
+
+tools:
+  # Docker is not guaranteed inside a Studio. The local executor pins each test
+  # process to its slot CPU on Linux, keeping the tool CPU budget fixed; it does
+  # not isolate generated code (reports say so).
+  executor: local
+  worker_cpus: []  # set by the setup script
+  workers: 2
+
+telemetry:
+  live_metrics_port: 9400
+
+cost:
+  # Free credits still have a price. Record the on-demand L4 rate shown in the
+  # Lightning console at session time; the setup script asks for it.
+  allocation_hourly_rate: null
+  currency: USD
+  rate_source: null
+  billing_granularity_seconds: 1

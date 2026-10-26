@@ -6,6 +6,7 @@ import copy
 import dataclasses
 import hashlib
 import json
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -23,8 +24,8 @@ TUNABLE_KEYS = frozenset(
         "server.args.enable-prefix-caching",
     }
 )
-# Descriptive keys that never affect behavior.
-DESCRIPTIVE_KEYS = frozenset({"name", "description"})
+# Keys that never affect what a run does (the live exporter only observes).
+DESCRIPTIVE_KEYS = frozenset({"name", "description", "telemetry.live_metrics_port", "telemetry.live_metrics_host"})
 
 
 class ConfigError(ValueError):
@@ -130,6 +131,9 @@ class TelemetryConfig:
     gpu_sample_interval_s: float = 1.0
     server_metrics_interval_s: float = 2.0
     nvidia_smi: str = "nvidia-smi"
+    # Port for the live Prometheus exporter (needs the 'dashboard' extra); null disables it.
+    live_metrics_port: int | None = None
+    live_metrics_host: str = "0.0.0.0"
 
 
 @dataclass
@@ -220,11 +224,13 @@ class Config:
             if self.server.cache_reset == "none":
                 warnings.append("server.cache_reset is 'none': prefix-cache state is uncontrolled; label results exploratory")
             if self.tools.executor == "local":
-                warnings.append("tools.executor is 'local': generated code runs without isolation")
+                warnings.append("tools.executor is 'local': generated code runs without container isolation")
             if not self.tools.worker_cpus:
                 warnings.append("tools.worker_cpus is empty: tool CPU is not pinned apart from the server")
             if self.model.revision is None:
                 warnings.append("model.revision is not pinned")
+        if self.tools.executor == "local" and self.tools.worker_cpus and not hasattr(os, "sched_setaffinity"):
+            warnings.append("tools.worker_cpus cannot be pinned on this platform with the local executor")
         if rate is None:
             warnings.append("cost.allocation_hourly_rate is unknown: cost will be reported as unavailable")
         return warnings

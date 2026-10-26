@@ -1,0 +1,34 @@
+# Real client path against the mock vLLM server: streaming HTTP, restart-based
+# cache reset, warm-up, drain check and server metrics, all without a GPU.
+# SYNTHETIC: the runner detects the mock via /version and labels the run.
+extends: synthetic.yaml
+name: mock-vllm
+
+model:
+  kind: openai
+  base_url: http://127.0.0.1:8000/v1
+  served_name: coding-model
+  repository: mock/coding-model
+  revision: mock
+  request_timeout_s: 60
+
+server:
+  cache_reset: restart
+  # The runner starts and stops this process before/after every run, as with vLLM.
+  start_command: [python, -m, rollout_cost.mock_server, "{args}"]
+  args:
+    host: 127.0.0.1
+    port: 8000
+    served-model-name: coding-model
+    max-model-len: 8192
+    max-num-seqs: 8
+    policy: mixed
+    base-latency: 0.15
+    per-token-latency: 0.0005
+    enable-prefix-caching: true
+  warmup_file: fixtures/warmup.jsonl
+  ready_timeout_s: 30
+  drain_timeout_s: 15
+
+telemetry:
+  live_metrics_port: 9400

@@ -59,13 +59,16 @@ def classify(exit_code: int | None, timed_out: bool) -> tuple[str, str | None]:
     return "grader_error", f"pytest_exit_{exit_code}"
 
 
-async def grade(task: Task, source_root: Path, grade_dir: Path, executor, pool: ToolPool, timeout_s: float, label: str) -> GradeResult:
+async def grade(task: Task, source_root: Path, grade_dir: Path, executor, pool: ToolPool, timeout_s: float, label: str,
+                on_slot=None) -> GradeResult:
     started = time.monotonic()
     try:
         build_grade_dir(task, source_root, grade_dir)
     except OSError as exc:
         return GradeResult("grader_error", f"prepare_failed: {exc}", None, time.monotonic() - started, "")
     slot = await pool.acquire()
+    if on_slot is not None:
+        on_slot(slot)
     try:
         result = await executor.run(grade_dir, GRADER_COMMAND, timeout_s, slot, label)
     except ExecutorError as exc:

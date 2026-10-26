@@ -1,0 +1,9 @@
+apiVersion: 1
+providers:
+  - name: rollout-cost-history
+    folder: Rollout Cost Lab
+    type: file
+    allowUiUpdates: false
+    disableDeletion: true
+    options:
+      path: ${RC_DASHBOARDS_DIR}/history

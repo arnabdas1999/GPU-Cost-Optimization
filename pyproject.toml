@@ -11,6 +11,13 @@ dependencies = [
     "pytest>=8.0",
 ]
 
+[project.optional-dependencies]
+# Live exporter (Prometheus) and historical export (PostgreSQL) for the Grafana dashboards.
+dashboard = [
+    "prometheus-client>=0.20",
+    "psycopg[binary]>=3.2",
+]
+
 [project.scripts]
 rollout-cost = "rollout_cost.cli:main"
 

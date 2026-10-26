@@ -26,7 +26,8 @@ def render_run(manifest: dict, s: dict) -> str:
     cur = cfg["cost"]["currency"]
     lines = [f"# Run {s['run_id']}", ""]
     if s["synthetic"]:
-        lines += ["> **SYNTHETIC RUN** — scripted model client. Timings exercise the software, not a GPU.", ""]
+        reason = manifest.get("synthetic_reason") or "scripted model client"
+        lines += [f"> **SYNTHETIC RUN** — {reason}. Timings exercise the software, not a GPU.", ""]
     for w in s["warnings"]:
         if not w.startswith("SYNTHETIC"):
             lines.append(f"- ⚠ {w}")

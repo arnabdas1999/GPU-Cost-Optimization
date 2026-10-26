@@ -21,7 +21,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import signal
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -45,7 +48,10 @@ class ServerController:
     @property
     def command(self) -> list[str] | None:
         s = self.cfg.server
-        return render_command(s.start_command, s.args) if s.start_command else None
+        if not s.start_command:
+            return None
+        # "python" means the runner's interpreter, as in the local tool executor.
+        return [sys.executable if part == "python" else part for part in render_command(s.start_command, s.args)]
 
     async def _get(self, path: str, timeout: float = 5.0) -> httpx.Response | None:
         try:
@@ -57,24 +63,64 @@ class ServerController:
     async def wait_healthy(self, timeout_s: float) -> float:
         started = time.monotonic()
         while time.monotonic() - started < timeout_s:
+            self._check_process()
             resp = await self._get("/health")
+            # The child can exit while the HTTP request is in progress. A
+            # response from another process must not hide that startup failure.
+            self._check_process()
             if resp is not None and resp.status_code == 200:
                 return time.monotonic() - started
-            if self._proc is not None and self._proc.poll() is not None:
-                raise RuntimeError(f"server process exited with code {self._proc.returncode}; see server.log")
             await asyncio.sleep(2.0)
         raise RuntimeError(f"server not healthy after {timeout_s:.0f}s")
+
+    def _check_process(self) -> None:
+        if self._proc is not None and self._proc.poll() is not None:
+            raise RuntimeError(f"server process exited with code {self._proc.returncode}; see server.log")
+
+    async def _require_unused_endpoint(self) -> None:
+        endpoint = httpx.URL(self.root)
+        port = endpoint.port or (443 if endpoint.scheme == "https" else 80)
+        try:
+            _, writer = await asyncio.wait_for(asyncio.open_connection(endpoint.host, port), timeout=2.0)
+        except (OSError, TimeoutError):
+            return
+        writer.close()
+        try:
+            await writer.wait_closed()
+        except OSError:
+            pass
+        raise RuntimeError(f"server endpoint {self.root} is already listening after stop; "
+                           "stop the existing server or configure a different port before restarting")
 
     def _stop(self) -> None:
         if self.cfg.server.stop_command:
             subprocess.run(self.cfg.server.stop_command, capture_output=True, timeout=120)
-        if self._proc is not None and self._proc.poll() is None:
-            self._proc.terminate()
+        if self._proc is not None:
+            proc = self._proc
+            if os.name != "nt":
+                # vLLM workers can outlive the API process, including after a
+                # failed startup. The whole session belongs to this run.
+                self._signal_group(proc.pid, signal.SIGTERM)
+            elif proc.poll() is None:
+                proc.terminate()
             try:
-                self._proc.wait(timeout=60)
+                proc.wait(timeout=60)
             except subprocess.TimeoutExpired:
-                self._proc.kill()
+                pass
+            if os.name != "nt":
+                # Also covers workers that outlive an already-exited parent.
+                self._signal_group(proc.pid, signal.SIGKILL)
+            elif proc.poll() is None:
+                proc.kill()
+            proc.wait(timeout=10)
         self._proc = None
+
+    @staticmethod
+    def _signal_group(pid: int, sig: int) -> None:
+        try:
+            os.killpg(pid, sig)
+        except ProcessLookupError:
+            pass
 
     async def restart(self) -> dict:
         command = self.command
@@ -83,10 +129,14 @@ class ServerController:
         t0 = time.monotonic()
         self.recorder.emit("server_stop")
         self._stop()
+        await self._require_unused_endpoint()
         stopped = time.monotonic()
+        if self._log:
+            self._log.close()
         self._log = (self.run_dir / "server.log").open("ab")
         self.recorder.emit("server_start", command=command)
-        self._proc = subprocess.Popen(command, stdout=self._log, stderr=subprocess.STDOUT)
+        self._proc = subprocess.Popen(command, stdout=self._log, stderr=subprocess.STDOUT,
+                                      start_new_session=os.name != "nt")
         ready_s = await self.wait_healthy(self.cfg.server.ready_timeout_s)
         self.recorder.emit("server_ready", ready_s=ready_s)
         return {"method": "restart", "command": command, "stop_s": stopped - t0, "startup_s": ready_s}
@@ -162,6 +212,10 @@ class ServerController:
         warm = await self.warmup()
         self.recorder.emit("warmup_done", **warm)
         idle = await self.wait_idle(self.cfg.server.drain_timeout_s)
+        self.recorder.emit("server_idle_before_run", **idle)
+        if idle.get("verified") is not True:
+            raise RuntimeError("server idleness before the cohort was not verified: "
+                               f"{idle.get('reason', 'verification missing')}; refusing to start the measured workload")
         snap = await self.snapshot()
         return {
             "reset": reset,

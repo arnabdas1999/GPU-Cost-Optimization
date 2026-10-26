@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .contract import SUPPORTED_RUN_FORMATS
 from .cost import allocation_cost, per_unit
 from .outcomes import CATEGORIES, GRADER_OUTCOMES, STOP_REASONS
 
@@ -55,9 +56,26 @@ class Run:
     summary: dict
 
 
+def portable(path: str | Path) -> str:
+    """A path as stored in artifacts: relative to the working directory when possible, always POSIX."""
+    p = Path(path)
+    try:
+        p = p.resolve().relative_to(Path.cwd().resolve())
+    except ValueError:
+        pass
+    return p.as_posix()
+
+
+class RunFormatError(ValueError):
+    pass
+
+
 def load_run(path: str | Path) -> Run:
-    path = Path(path)
+    path = Path(str(path).replace("\\", "/"))
     manifest = json.loads((path / "run.json").read_text(encoding="utf-8"))
+    version = manifest.get("format_version", 1)  # runs written before versioning are format 1
+    if version not in SUPPORTED_RUN_FORMATS:
+        raise RunFormatError(f"{path}: run format {version} is not supported (supported: {sorted(SUPPORTED_RUN_FORMATS)})")
     episodes = [json.loads(line) for line in (path / "episodes.jsonl").read_text(encoding="utf-8").splitlines() if line.strip()]
     episodes.sort(key=lambda e: e["index"])
     summary_path = path / "summary.json"
@@ -213,7 +231,8 @@ def run_warnings(manifest: dict, s: dict) -> list[str]:
     cfg = manifest["config"]
     warnings: list[str] = []
     if manifest["synthetic"]:
-        warnings.append("SYNTHETIC: scripted model client. Verifies software behavior only; not evidence of GPU efficiency.")
+        reason = manifest.get("synthetic_reason") or "scripted model client"
+        warnings.append(f"SYNTHETIC: {reason}. Verifies software behavior only; not evidence of GPU efficiency.")
     cap = cfg["execution"]["max_active_episodes"]
     n = s["cohort_size"]
     if cap > n:
@@ -230,6 +249,9 @@ def run_warnings(manifest: dict, s: dict) -> list[str]:
     if not s["tokens"]["usage_complete"]:
         warnings.append("Token usage was not reported for every request; token totals are unavailable.")
     drain = s.get("drain") or {}
+    idle_before = (manifest.get("timeline", {}).get("server_prep") or {}).get("idle_before_run") or {}
+    if not idle_before.get("verified", False) and not manifest["synthetic"]:
+        warnings.append(f"Server idleness before the cohort was not verified: {idle_before.get('reason')}.")
     if not drain.get("server_idle", {}).get("verified", False) and not manifest["synthetic"]:
         warnings.append(f"Server idleness after the cohort was not verified: {drain.get('server_idle', {}).get('reason')}.")
     if drain.get("leftover_tool_processes"):
@@ -256,8 +278,51 @@ def protected_diff(a: dict, b: dict) -> list[dict]:
     return [{"key": k, "baseline": a.get(k), "candidate": b.get(k)} for k in keys if a.get(k) != b.get(k)]
 
 
+def run_problems(run: Run) -> list[str]:
+    """Check the recorded cohort and decision inputs before comparing a run.
+
+    Recompute decision values from episodes and the manifest timeline rather
+    than trusting a summary that may belong to a different or incomplete run.
+    Unverified real-server idleness leaves artifacts readable, but makes them
+    ineligible for acceptance.
+    """
+    manifest, summary = run.manifest, run.summary
+    problems: list[str] = []
+    if manifest.get("status") != "complete":
+        problems.append(f"run status is {manifest.get('status')!r}, not 'complete'")
+    expected = manifest["protected"].get("cohort") or []
+    actual = [e["episode_id"] for e in run.episodes]
+    if not expected or len(expected) != len(set(expected)):
+        problems.append("declared cohort is empty or contains duplicate episode IDs")
+    if Counter(actual) != Counter(expected):
+        problems.append("episode records must contain exactly one terminal record per declared episode "
+                        "(missing, unexpected or duplicate records found)")
+    try:
+        derived = summarize_run(manifest, run.episodes, manifest["timeline"])
+        stored_headline, derived_headline = _headline(summary), _headline(derived)
+    except (KeyError, TypeError, ValueError) as exc:
+        raise RunFormatError(f"{run.path}: incomplete or invalid run artifacts: {exc}") from exc
+    mismatches = [key for key in stored_headline if stored_headline[key] != derived_headline[key]]
+    mismatches.extend(key for key in ("run_id", "synthetic", "outcomes") if summary.get(key) != derived[key])
+    if mismatches:
+        problems.append("summary disagrees with episode records or manifest: " + ", ".join(mismatches))
+    if not manifest["synthetic"]:
+        timeline = manifest["timeline"]
+        idle_checks = (
+            ("before the cohort", (timeline.get("server_prep") or {}).get("idle_before_run") or {}),
+            ("after the cohort", (timeline.get("drain") or {}).get("server_idle") or {}),
+        )
+        for phase, idle in idle_checks:
+            if idle.get("verified") is not True:
+                problems.append(f"server idleness {phase} was not verified: "
+                                f"{idle.get('reason', 'verification missing')}")
+    return problems
+
+
 def compare_runs(base: Run, cand: Run) -> dict:
     problems: list[str] = []
+    for role, run in (("baseline", base), ("candidate", cand)):
+        problems.extend(f"{role}: {problem}" for problem in run_problems(run))
     diff = protected_diff(base.manifest["protected"], cand.manifest["protected"])
     if diff:
         problems.append(f"{len(diff)} protected setting(s) differ: " + ", ".join(d["key"] for d in diff[:8]))
@@ -285,8 +350,10 @@ def compare_runs(base: Run, cand: Run) -> dict:
 
     bs, cs = base.summary, cand.summary
     return {
-        "baseline": str(base.path),
-        "candidate": str(cand.path),
+        "baseline": portable(base.path),
+        "candidate": portable(cand.path),
+        "baseline_run_id": base.manifest["run_id"],
+        "candidate_run_id": cand.manifest["run_id"],
         "valid": not problems,
         "problems": problems,
         "protected_diff": diff,
@@ -388,6 +455,77 @@ def evaluate_acceptance(comparisons: list[dict], rule: dict | None = None) -> di
         "trials": len(comparisons),
         "note": "Prototype decision rule over a small sample; not a statistical test of equivalence.",
     }
+
+
+def project_root(start: Path) -> Path:
+    root = start.resolve()
+    while not (root / "pyproject.toml").exists() and root.parent != root:
+        root = root.parent
+    return root
+
+
+@dataclass
+class Evaluated:
+    """An experiment or sweep with its runs, comparisons and acceptance results."""
+
+    name: str
+    kind: str  # paired | sweep
+    meta: dict
+    baseline_runs: list[Run]
+    candidate_runs: dict[str, list[Run]]  # candidate name -> runs, aligned with baseline_runs
+    comparisons: dict[str, list[dict]]
+    acceptance: dict[str, dict]
+    synthetic: bool
+    chosen: str | None = None
+
+
+def evaluate_experiment_file(path: str | Path) -> Evaluated:
+    """Paired experiment YAML written by `rollout-cost paired` (or by hand)."""
+    import yaml
+
+    path = Path(path)
+    exp = yaml.safe_load(path.read_text(encoding="utf-8"))
+    root = project_root(path.parent)
+    bases, cands, comps = [], [], []
+    for pair in exp["pairs"]:
+        base, cand = load_run(root / pair["baseline"]), load_run(root / pair["candidate"])
+        bases.append(base)
+        cands.append(cand)
+        comps.append(compare_runs(base, cand))
+    acceptance = evaluate_acceptance(comps, exp.get("acceptance"))
+    synthetic = any(r.manifest["synthetic"] for r in [*bases, *cands])
+    return Evaluated(exp["name"], "paired", {"split": exp.get("split"), "status": exp.get("status"), "source": portable(path)},
+                     bases, {"candidate": cands}, {"candidate": comps}, {"candidate": acceptance}, synthetic)
+
+
+def evaluate_sweep_selection(path: str | Path) -> Evaluated:
+    """Sweep directory (or its selection.json) written by `rollout-cost sweep`."""
+    path = Path(path)
+    if path.is_dir():
+        path = path / "selection.json"
+    sel = json.loads(path.read_text(encoding="utf-8"))
+    root = project_root(path.parent)
+    runs = {name: load_run(root / p) for name, p in sel["runs"].items()}
+    baseline_name = sel["baseline_variant"]
+    base = runs[baseline_name]
+    comps, accs, cands = {}, {}, {}
+    for name, run in runs.items():
+        if name == baseline_name:
+            continue
+        rule = ((sel.get("results") or {}).get(name) or {}).get("acceptance", {}).get("rule")
+        comp = compare_runs(base, run)
+        comps[name], cands[name] = [comp], [run]
+        accs[name] = evaluate_acceptance([comp], rule or {"min_trials": 1, "require_reduction_above_spread": False})
+    synthetic = any(r.manifest["synthetic"] for r in runs.values())
+    return Evaluated(path.parent.name, "sweep", {"split": sel.get("split"), "status": "development selection",
+                                                 "source": portable(path), "baseline_variant": baseline_name},
+                     [base], cands, comps, accs, synthetic, chosen=sel.get("chosen"))
+
+
+def verdict(acceptance: dict) -> str:
+    if acceptance.get("aa_calibration"):
+        return "A/A CALIBRATION"
+    return "ACCEPTED" if acceptance["accepted"] else "NOT ACCEPTED"
 
 
 def relative_spread(values: list[float]) -> float:

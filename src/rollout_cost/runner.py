@@ -29,6 +29,7 @@ from . import __version__
 from .admission import FifoSemaphore
 from .analysis import summarize_run
 from .config import Config, fingerprint, protected_settings, render_command
+from .contract import RUN_FORMAT_VERSION
 from .fixtures import EpisodeSpec, build_cohort, load_split
 from .grading import grade
 from .harness import EpisodeEnv, EpisodeResult, run_episode
@@ -102,11 +103,13 @@ def build_manifest(cfg: Config, split: str, run_id: str, label: str | None, coho
         "tool_workers": cfg.tool_worker_count,
     })
     return {
+        "format_version": RUN_FORMAT_VERSION,
         "run_id": run_id,
         "label": label,
         "created_utc": utc_now(),
         "status": "started",
         "synthetic": cfg.synthetic,
+        "synthetic_reason": "scripted model client" if cfg.synthetic else None,
         "split": split,
         "config": cfg_dict,
         "config_fingerprint": fingerprint(cfg_dict),
@@ -154,19 +157,42 @@ class CohortRunner:
         for sub in ("workspaces", "grading", "transcripts"):
             (run_dir / sub).mkdir()
         manifest = build_manifest(cfg, self.split, self.run_id, self.label, self.cohort, self.executor, self.client)
+        # The runner shares the server's reserved CPUs, so tool-worker CPUs serve only tool work.
+        previous_affinity = None
+        if cfg.server.reserved_cpus and hasattr(os, "sched_setaffinity"):
+            previous_affinity = os.sched_getaffinity(0)
+            os.sched_setaffinity(0, set(cfg.server.reserved_cpus))
+            manifest["host"]["runner_cpu_affinity"] = sorted(os.sched_getaffinity(0))
         _write_json(run_dir / "run.json", manifest)
+        try:
+            return await self._run(manifest)
+        finally:
+            if previous_affinity is not None:
+                os.sched_setaffinity(0, previous_affinity)
+
+    async def _run(self, manifest: dict) -> dict:
+        cfg, run_dir = self.cfg, self.run_dir
 
         recorder = EventRecorder(run_dir / "events.jsonl", self.run_id)
         llm_sem = FifoSemaphore(cfg.execution.max_inflight_llm_requests)
         pool = ToolPool(cfg.tools.worker_cpus, cfg.tools.workers)
         env = EpisodeEnv(self.run_id, cfg, self.client, llm_sem, pool, self.executor, recorder)
         server = None if cfg.synthetic else ServerController(cfg, run_dir, recorder, self.client)
-        timeline: dict = {"prep_start": recorder.now()}
+        timeline: dict = {"prep_start": recorder.now(), "origin_utc": recorder.origin_utc}
         samplers = []
+        gpu = GpuSampler(run_dir / "gpu_samples.jsonl", cfg.telemetry.gpu_sample_interval_s, recorder, cfg.telemetry.nvidia_smi)
+        live = None
+        if cfg.telemetry.live_metrics_port is not None:
+            from .live import LiveExporter
+
+            live = LiveExporter(cfg, manifest, recorder, llm_sem, pool, gpu)
+            live.start()
         try:
             recorder.emit("run_start", cohort_size=len(self.cohort))
             timeline["server_prep"] = await server.prepare() if server else {"skipped": "synthetic run"}
-            gpu = GpuSampler(run_dir / "gpu_samples.jsonl", cfg.telemetry.gpu_sample_interval_s, recorder, cfg.telemetry.nvidia_smi)
+            version = timeline["server_prep"].get("version") or {}
+            if isinstance(version, dict) and version.get("mock"):
+                manifest.update(synthetic=True, synthetic_reason="mock vLLM server (no GPU)")
             samplers.append(("gpu", gpu))
             if server:
                 samplers.append(("server", ServerMetricsSampler(run_dir / "server_metrics.jsonl",
@@ -200,6 +226,8 @@ class CohortRunner:
             await self.client.aclose()
             recorder.emit("run_end")
             recorder.close()
+            if live:
+                live.stop()
 
         timeline["max_inflight_observed"] = llm_sem.max_in_use
         timeline["max_tool_slots_observed"] = pool.max_in_use
@@ -253,7 +281,9 @@ class CohortRunner:
         recorder.emit("grading_start", spec.episode_id)
         if workspace.exists():
             graded = await grade(spec.task, workspace, self.run_dir / "grading" / spec.episode_id, self.executor,
-                                 env.tool_pool, self.cfg.tools.grader_timeout_s, f"{spec.episode_id}-grade")
+                                 env.tool_pool, self.cfg.tools.grader_timeout_s, f"{spec.episode_id}-grade",
+                                 on_slot=lambda slot: recorder.emit("grading_slot_acquired", spec.episode_id,
+                                                                    slot=slot.index, cpu=slot.cpu))
             shutil.rmtree(self.run_dir / "grading" / spec.episode_id, ignore_errors=True)
             grade_dict = graded.to_dict()
         else:
