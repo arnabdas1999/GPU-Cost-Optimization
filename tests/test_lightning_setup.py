@@ -75,6 +75,7 @@ def setup_host(tmp_path):
     project = tmp_path / "project"
     (project / "scripts").mkdir(parents=True)
     shutil.copyfile(ROOT / "scripts/lightning-setup.sh", project / "scripts/lightning-setup.sh")
+    shutil.copyfile(ROOT / "scripts/notebook-setup.sh", project / "scripts/notebook-setup.sh")
     fake_bin = tmp_path / "bin"
     fake_bin.mkdir()
     venv = tmp_path / "vllm-venv"
@@ -119,9 +120,9 @@ fi
                MODEL_REPO="example/selected-coder", SETUP_TEST_LOG=log.as_posix(),
                SETUP_TEST_VERSION_FILE=version.as_posix())
 
-    def run(*args, keep_wrong_version=False):
+    def run(*args, keep_wrong_version=False, script="lightning-setup.sh"):
         child_env = {**env, "SETUP_TEST_KEEP_VERSION": "1" if keep_wrong_version else "0"}
-        result = subprocess.run([bash, "--noprofile", "--norc", "scripts/lightning-setup.sh", *args],
+        result = subprocess.run([bash, "--noprofile", "--norc", "scripts/" + script, *args],
                                 cwd=project, env=child_env, capture_output=True, text=True, timeout=20)
         commands = log.read_text() if log.exists() else ""
         return result, commands
@@ -165,4 +166,23 @@ def test_rehearsal_does_not_install_vllm_or_download_a_model(setup_host):
     assert result.returncode == 0, result.stdout + result.stderr
     assert "--rehearsal" in commands and "doctor --config" in commands
     for real_step in ("nvidia-smi", "pip install", "HfApi", "snapshot_download"):
+        assert real_step not in commands
+
+
+def test_notebook_setup_uses_its_profile_and_local_tools_even_with_docker(setup_host):
+    run, _, _ = setup_host
+    result, commands = run(script="notebook-setup.sh")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "--profile notebook --model-repo example/selected-coder --revision resolved-sha" in commands
+    assert "--executor local" in commands and "docker" not in commands
+    assert "doctor --config configs/notebook.pinned.yaml --start-server" in commands
+    assert "configs/notebook-smoke.pinned.yaml" in result.stdout
+
+
+def test_notebook_rehearsal_skips_real_gpu_dependencies(setup_host):
+    run, _, _ = setup_host
+    result, commands = run("--rehearsal", script="notebook-setup.sh")
+    assert result.returncode == 0, result.stdout + result.stderr
+    assert "--profile notebook" in commands and "--rehearsal" in commands
+    for real_step in ("nvidia-smi", "docker", "pip install", "snapshot_download"):
         assert real_step not in commands

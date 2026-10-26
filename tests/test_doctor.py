@@ -50,3 +50,15 @@ def test_doctor_requires_usable_idle_gauges(monkeypatch, metrics, expected_failu
     output = capsys.readouterr().out
     assert ("[FAIL]" in output) == bool(expected_failures)
     model.aclose.assert_awaited_once()
+
+
+def test_doctor_cancellation_during_startup_always_stops_server(monkeypatch, tmp_path):
+    cfg = load_config(ROOT / "configs/mock-vllm.yaml")
+    controller = Mock()
+    controller.restart = AsyncMock(side_effect=asyncio.CancelledError())
+    controller._log = (tmp_path / "server.log").open("w")
+    monkeypatch.setattr("rollout_cost.server.ServerController", lambda *args: controller)
+    with pytest.raises(asyncio.CancelledError):
+        asyncio.run(cli._doctor_server(cfg, start_server=True))
+    controller._stop.assert_called_once()
+    assert controller._log.closed

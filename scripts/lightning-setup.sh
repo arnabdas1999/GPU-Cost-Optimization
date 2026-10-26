@@ -27,7 +27,14 @@ case "${1:-}" in
 esac
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
-MODEL_REPO="${MODEL_REPO:-Qwen/Qwen2.5-Coder-7B-Instruct}"
+PROFILE="${ROLLOUT_SETUP_PROFILE:-lightning}"
+case "$PROFILE" in
+  lightning) DEFAULT_MODEL=Qwen/Qwen2.5-Coder-7B-Instruct; SMOKE_CONFIG=configs/smoke.pinned.yaml ;;
+  notebook) DEFAULT_MODEL=Qwen/Qwen2.5-Coder-3B-Instruct; SMOKE_CONFIG=configs/notebook-smoke.pinned.yaml ;;
+  *) echo "unknown setup profile: $PROFILE" >&2; exit 2 ;;
+esac
+RUN_CONFIG="configs/$PROFILE.pinned.yaml"
+MODEL_REPO="${MODEL_REPO:-$DEFAULT_MODEL}"
 if [[ $MODE != rehearsal ]]; then
   : "${VLLM_VERSION:?set VLLM_VERSION to an exact vLLM release (e.g. one at least two weeks old)}"
 fi
@@ -81,7 +88,7 @@ else
   echo "vLLM $INSTALLED_VLLM_VERSION: $VLLM_BIN"
   uv pip freeze --python "$VLLM_VENV/bin/python" >"$ROOT/vllm-packages.txt"
   if [[ $MODE == run ]]; then
-    "$VLLM_VENV/bin/python" -c 'import torch; assert torch.cuda.is_available(), "CUDA is unavailable: check the driver and vLLM wheel compatibility"; print("GPU:", torch.cuda.get_device_name(0), "Torch CUDA:", torch.version.cuda)'
+    "$VLLM_VENV/bin/python" -c 'import torch; assert torch.cuda.is_available(), "CUDA is unavailable: check the driver and vLLM wheel compatibility"; assert torch.cuda.get_device_capability(0) >= (7, 5), "vLLM requires compute capability 7.5+: choose T4, not P100"; print("GPU:", torch.cuda.get_device_name(0), "Torch CUDA:", torch.version.cuda)'
     if ! "$VLLM_BIN" serve --help >"$ROOT/vllm-serve-help.txt" 2>&1; then
       echo "vllm serve --help failed; see vllm-serve-help.txt" >&2
       exit 1
@@ -100,28 +107,36 @@ fi
 
 step "executor"
 EXECUTOR=local
-if docker info >/dev/null 2>&1; then
+if [[ $PROFILE != notebook ]] && docker info >/dev/null 2>&1; then
   echo "docker daemon available: building the tool image and using the docker executor"
   docker build -q -t rollout-cost-tools:py312 -f docker/tool-runner.Dockerfile docker
   EXECUTOR=docker
 else
-  echo "no docker daemon: using the local executor (CPU-pinned, not isolated; reports will say so)"
+  echo "using local tools; CPU allocation is detected below (no container isolation)"
 fi
 
 step "pinned configs"
-PIN_ARGS=(--model-repo "$MODEL_REPO" --revision "$REVISION" --vllm "$VLLM_BIN" --executor "$EXECUTOR")
+PIN_ARGS=(--profile "$PROFILE" --model-repo "$MODEL_REPO" --revision "$REVISION" --vllm "$VLLM_BIN" --executor "$EXECUTOR")
 [[ -n "${RATE:-}" ]] && PIN_ARGS+=(--rate "$RATE")
 [[ -n "${RATE_SOURCE:-}" ]] && PIN_ARGS+=(--rate-source "$RATE_SOURCE")
 [[ $MODE == rehearsal ]] && PIN_ARGS+=(--rehearsal)
 uv run rollout-cost pin "${PIN_ARGS[@]}"
 
 step "fixtures and doctor"
-uv run rollout-cost validate-fixtures --config configs/lightning.pinned.yaml
-uv run rollout-cost doctor --config configs/lightning.pinned.yaml --start-server
+uv run rollout-cost validate-fixtures --config "$RUN_CONFIG"
+uv run rollout-cost doctor --config "$RUN_CONFIG" --start-server
 
+if [[ $PROFILE == notebook ]]; then
+cat <<EOF
+
+Notebook setup complete. Next (docs/NOTEBOOK_RUNBOOK.md):
+  uv run rollout-cost run --config $SMOKE_CONFIG --split dev
+EOF
+else
 cat <<EOF
 
 Setup complete. Next (docs/LIGHTNING_RUNBOOK.md):
   bash scripts/observability-native.sh start             # optional live view
-  uv run rollout-cost run --config configs/smoke.pinned.yaml --split dev
+  uv run rollout-cost run --config $SMOKE_CONFIG --split dev
 EOF
+fi

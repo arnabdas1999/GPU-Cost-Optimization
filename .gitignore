@@ -14,3 +14,7 @@ experiments/*/
 rehearsal-out/
 vllm-packages.txt
 vllm-serve-help.txt
+notebook-*.log
+notebook-hardware.txt
+notebook-results.tgz
+configs/notebook*.pinned.yaml

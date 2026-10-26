@@ -21,8 +21,20 @@ the scheduling controls, the measurements and the experiment logic around it.
 **Status: working prototype; no real-GPU measurements yet.** Everything below runs and
 is tested on a laptop without a GPU, using a scripted model or a mock vLLM server.
 Results from those runs are labeled **SYNTHETIC** everywhere. They show that the
-software works, not that any configuration saves money. The first measured session is
-planned on a single Lightning AI L4 GPU ([runbook](docs/LIGHTNING_RUNBOOK.md)).
+software works, not that any configuration saves money. Start real-GPU testing with
+the Colab/Kaggle T4 notebook: a six-episode smoke test, optional pilot, and result download.
+
+[![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/arnabdas1999/GPU-Cost-Optimization/blob/main/notebooks/gpu_smoke_test.ipynb)
+
+Choose a GPU runtime, then **Run all**. For Kaggle, import
+[`notebooks/gpu_smoke_test.ipynb`](notebooks/gpu_smoke_test.ipynb), select **T4** and enable
+**Internet**. See the [notebook runbook](docs/NOTEBOOK_RUNBOOK.md) for exact steps and
+troubleshooting. The default profile uses one GPU, the 3B coder model, FP16 and a
+4,096-token context; the longer pilot and A/A runs are off by default.
+
+The [Lightning runbook](docs/LIGHTNING_RUNBOOK.md) remains available for an L4 host.
+As of October 26, 2026, Lightning reports Studio access unavailable during its
+[incident investigation](https://lightning.ai/security-incident/); use the notebook route first.
 
 ---
 
@@ -292,7 +304,15 @@ More detail is in [observability/README.md](observability/README.md).
 
 ## 5. Running on a real GPU
 
-### Lightning AI (the planned path)
+### Colab / Kaggle (start here)
+
+Open [the GPU test notebook](https://colab.research.google.com/github/arnabdas1999/GPU-Cost-Optimization/blob/main/notebooks/gpu_smoke_test.ipynb)
+in Colab, select a GPU, and run all cells. On Kaggle, import the same notebook, select
+T4 and enable Internet. The [notebook runbook](docs/NOTEBOOK_RUNBOOK.md) covers setup,
+the smoke test, optional longer runs and downloading diagnostics. GPU execution still
+needs to be verified on the assigned runtime; CPU rehearsals establish software behavior.
+
+### Lightning AI (alternative when Studio access returns)
 
 The whole session is scripted and has been rehearsed in a plain Ubuntu container without
 a GPU. Follow [docs/LIGHTNING_RUNBOOK.md](docs/LIGHTNING_RUNBOOK.md). It's a timed
@@ -569,7 +589,7 @@ Run every command as `uv run rollout-cost <command> …`.
 | --- | --- |
 | `validate-fixtures --config C` | Checks each task: starting code fails its public and hidden tests, the reference fix passes both |
 | `doctor --config C [--start-server]` | Checks the config, placeholders, tasks, CPU sets, executor, GPU, live exporter, model server, streaming and usage. `--start-server` launches the server with `server.start_command` for the checks |
-| `pin --revision SHA --vllm PATH [--model-repo REPO] [--rate R --rate-source S] [--rehearsal]` | Writes `configs/*.pinned.yaml` for a GPU session (run by `lightning-setup.sh`) |
+| `pin --revision SHA --vllm PATH [--profile lightning\|notebook] [--model-repo REPO] [--rate R --rate-source S] [--rehearsal]` | Writes resolved configs for the selected GPU profile |
 | `run --config C [--split dev] [--label L]` | Runs one cohort under one config and writes `runs/<id>/` |
 | `sweep --config S` | Runs each variant in a sweep file, compares each to the baseline variant, writes `experiments/<sweep>-<time>/` with `selection.md` and `chosen.yaml` |
 | `paired --baseline A --candidate B [--trials N] [--name X] [--split dev]` | Runs alternating paired trials, writes `experiments/X.yaml` and `reports/X.md` with the decision |

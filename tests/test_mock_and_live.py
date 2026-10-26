@@ -152,9 +152,15 @@ def test_live_exporter_serves_contract_metrics_during_run(tmp_path):
     actives = [float(l.split(" ")[-1]) for t in scrapes for l in t.splitlines() if l.startswith("rc_episodes_active{")]
     assert max(actives) <= cfg.execution.max_active_episodes
     assert summary["outcomes"]["success"] == 6
-    # The exporter is stopped with the run, so the port is free again.
+    # The listener must be gone. Closed HTTP connections can remain in Linux
+    # TIME_WAIT, so rebind with the HTTP server's address-reuse policy.
     with socket.socket() as s:
+        s.settimeout(1)
+        assert s.connect_ex(("127.0.0.1", port)) != 0
+    with socket.socket() as s:
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         s.bind(("127.0.0.1", port))
+        s.listen(1)
 
 
 def test_unknown_price_omits_cost_series(tmp_path):

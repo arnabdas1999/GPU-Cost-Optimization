@@ -154,23 +154,23 @@ async def _doctor_server(cfg: Config, start_server: bool = False) -> int:
         recorder = EventRecorder(Path(tmp) / "events.jsonl", "doctor")
         controller = ServerController(cfg, Path(tmp), recorder, None)
         try:
-            started = await controller.restart()
-            _print_check("ok", "server start", f"healthy after {started['startup_s']:.1f}s: {' '.join(started['command'])[:160]}")
-        except Exception as exc:  # noqa: BLE001
-            _print_check("FAIL", "server start", f"{exc}; log: {Path(tmp) / 'server.log'}")
-            log = Path(tmp) / "server.log"
-            if log.exists():
-                print("    " + "\n    ".join(log.read_text(errors="replace").splitlines()[-15:]))
-            controller._stop()
-            recorder.close()
-            return 1
-        try:
+            try:
+                started = await controller.restart()
+                _print_check("ok", "server start", f"healthy after {started['startup_s']:.1f}s: {' '.join(started['command'])[:160]}")
+            except Exception as exc:  # noqa: BLE001
+                _print_check("FAIL", "server start", f"{exc}; log: {Path(tmp) / 'server.log'}")
+                log = Path(tmp) / "server.log"
+                if log.exists():
+                    print("    " + "\n    ".join(log.read_text(errors="replace").splitlines()[-15:]))
+                return 1
             return await _doctor_endpoint(cfg)
         finally:
-            controller._stop()
-            if controller._log:
-                controller._log.close()
-            recorder.close()
+            try:
+                controller._stop()
+            finally:
+                if controller._log:
+                    controller._log.close()
+                recorder.close()
 
 
 async def _doctor_endpoint(cfg: Config) -> int:
@@ -372,15 +372,15 @@ def cmd_pin(args) -> int:
 
     if not args.rehearsal and not args.revision:
         raise ConfigError("--revision is required (resolve the model commit sha first)")
-    if not (Path(args.configs_dir) / "lightning.yaml").exists():
-        raise ConfigError(f"{args.configs_dir}/lightning.yaml not found; run from the repository root")
+    if not (Path(args.configs_dir) / f"{args.profile}.yaml").exists():
+        raise ConfigError(f"{args.configs_dir}/{args.profile}.yaml not found; run from the repository root")
     if args.cpus:
         cpus = [int(c) for c in args.cpus.split(",") if c.strip()]
     else:
         cpus = sorted(os.sched_getaffinity(0)) if hasattr(os, "sched_getaffinity") else list(range(os.cpu_count() or 1))
     written = write_pinned(Path(args.configs_dir), revision=args.revision or "rehearsal", vllm_bin=args.vllm, cpus=cpus,
                            rate=args.rate, rate_source=args.rate_source, executor=args.executor, rehearsal=args.rehearsal,
-                           model_repo=args.model_repo)
+                           model_repo=args.model_repo, profile=args.profile)
     reserved, workers = split_cpus(cpus)
     print(f"CPUs {cpus}: server/runner {reserved or 'unpinned'}, tool workers {workers or 'unpinned'}")
     for path in written:
@@ -437,7 +437,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.set_defaults(func=cmd_doctor)
 
     p = sub.add_parser("pin", help="write configs/*.pinned.yaml for a GPU session (used by lightning-setup.sh)")
-    p.add_argument("--model-repo", help="model repository to serve (default: model.repository in configs/lightning.yaml)")
+    p.add_argument("--profile", choices=["lightning", "notebook"], default="lightning",
+                   help="base profile and generated file names (default: lightning)")
+    p.add_argument("--model-repo", help="model repository to serve (default: model.repository in the selected profile)")
     p.add_argument("--revision", help="resolved model commit sha (required unless --rehearsal)")
     p.add_argument("--vllm", default="vllm", help="path to the vllm executable")
     p.add_argument("--cpus", help="comma-separated CPUs to split (default: those available to this process)")

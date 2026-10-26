@@ -1,0 +1,3 @@
+# Bash setup must also work in Windows checkouts opened through Git Bash.
+*.sh text eol=lf
+*.ipynb text eol=lf
