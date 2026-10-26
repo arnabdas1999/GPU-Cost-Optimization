@@ -4,7 +4,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 export ROLLOUT_SETUP_PROFILE=notebook
 export VLLM_VERSION="${VLLM_VERSION:-0.31.0}"
-export MODEL_REPO="${MODEL_REPO:-Qwen/Qwen2.5-Coder-3B-Instruct}"
+export MODEL_REPO="${MODEL_REPO:-Qwen/Qwen2.5-Coder-7B-Instruct-AWQ}"
 # Keep large packages outside /kaggle/working and separate from the kernel.
 export VLLM_VENV="${VLLM_VENV:-/tmp/rollout-cost-vllm-$VLLM_VERSION}"
 export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"

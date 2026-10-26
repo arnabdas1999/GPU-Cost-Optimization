@@ -99,10 +99,33 @@ def edit_file(root: Path, rel: str, old: str, new: str) -> None:
     text = path.read_bytes().decode("utf-8", errors="replace")
     count = text.count(old)
     if count == 0:
-        raise ToolError(f"The \"old\" text was not found in {rel}. It must match the file exactly, including whitespace.")
+        raise ToolError(f"The \"old\" text was not found in {rel}. Read the current file before retrying; "
+                        "it must match exactly, including whitespace.")
     if count > 1:
         raise ToolError(f"The \"old\" text occurs {count} times in {rel}. Include more context so it matches once.")
+    if old == new:
+        raise ToolError("The old and new text are identical; no change was made. "
+                        "Read the current file and provide a replacement that fixes the problem.")
     path.write_bytes(text.replace(old, new, 1).encode("utf-8"))
+
+
+def python_syntax_feedback(root: Path, rel: str) -> str:
+    """Check Python syntax without executing code; invalid edits remain applied."""
+    if not rel.endswith(".py"):
+        return ""
+    path = resolve_workspace_path(root, rel)
+    source = path.read_bytes()
+    try:
+        compile(source, rel, "exec", dont_inherit=True)
+    except SyntaxError as exc:
+        lines = source.decode("utf-8", errors="replace").splitlines()
+        line = exc.lineno or 1
+        excerpt = "\n".join(f"{index + 1}: {lines[index][:240]}"
+                            for index in range(max(0, line - 2), min(len(lines), line + 1)))
+        return (f"\nPython syntax check failed: {exc.msg} (line {line}).\n{excerpt}\n"
+                "The file change was applied. Read the current file and repair its syntax, "
+                "preserving indentation on every line, before running tests or finishing.")
+    return "\nPython syntax check passed; behavior still needs tests."
 
 
 def list_files(root: Path) -> list[str]:

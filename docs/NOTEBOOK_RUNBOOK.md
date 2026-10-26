@@ -34,9 +34,11 @@ model caches and `.env` files.
 
 | Setting | Notebook profile |
 | --- | --- |
-| Model | `Qwen/Qwen2.5-Coder-3B-Instruct`, exact revision resolved at setup |
-| Precision | FP16 (`float16`) |
-| Context | 4096 for both server and harness |
+| Model | `Qwen/Qwen2.5-Coder-7B-Instruct-AWQ`, exact revision resolved at setup |
+| Precision | AWQ 4-bit weights; FP16 (`float16`) activations |
+| Context | 8192 for both server and harness |
+| Episode budget | 12 replies; 1024 output tokens per reply |
+| Sampling | Greedy (`temperature: 0`, `top_p: 1`) |
 | GPUs | One; notebook selects GPU 0, tensor parallel size 1 |
 | Server request slots | 2 |
 | CUDA graphs | Disabled with `enforce-eager` for quicker startup; fixed across comparisons |
@@ -50,9 +52,35 @@ of those GPUs. No Docker daemon or Grafana service is required. Local tools exec
 generated code as the notebook user; run in a fresh runtime with only the project data
 needed for testing.
 
-The default is a conservative starting configuration, not a verified GPU compatibility
-matrix. Actual installation depends on the runtime driver and vLLM wheel. Free runtime
+The earlier six-reply, 4096-context T4 runs completed without infrastructure errors but
+solved zero tasks. In the 7B AWQ run, five tasks ended with invalid Python and one missed
+behavior required by its docstring. Four exhausted the reply budget. The current defaults
+are a calibration proposal: literal-edit indentation is explained, file writes/edits get
+an immediate syntax check without executing generated code, and unchanged edits are rejected.
+Invalid code remains applied and hidden grading stays independent. These changes do not
+guarantee a solve rate; review the new smoke run before comparisons. The harness behavior
+hash distinguishes runs with the updated prompt and tools from older runs.
+
+Actual installation depends on the runtime driver and vLLM wheel. Free runtime
 limits and CPU contention also affect timing. Results use `dev`: the held-out split is empty.
+
+## Update an existing 7B AWQ session
+
+If the model and vLLM are already installed, keep the current runtime, saved results,
+model cache and pinned revision. In a code cell, update the checkout:
+
+```python
+subprocess.run(["git", "pull", "--ff-only"], cwd=ROOT, check=True)
+```
+
+Then rerun the smoke cell. The existing pinned configs extend `notebook.yaml`, so they
+inherit the new budgets and server context. The CLI starts a fresh process and loads the
+updated prompt and tools. No setup rerun or model download is needed for this case.
+If Git reports conflicting local edits, preserve them and resolve the conflict before
+continuing. Use the new settings/setup cells for a fresh runtime or a different model.
+
+Do not compare an older six-reply run with a new run as evidence of a serving optimization.
+After calibration, freeze the model, prompt, harness, budgets and sampling for both variants.
 
 ## Optional pilot and comparisons
 
@@ -93,8 +121,10 @@ Skip paired validation if the sweep kept the baseline. Download the updated arch
 - **CUDA/driver or wheel errors:** save `notebook-hardware.txt`, `notebook-setup.log` and
   `vllm-serve-help.txt` if present. Do not upgrade the kernel's Torch blindly: the server
   has its own environment. Adjust `VLLM_VERSION` only after checking the driver/wheel match.
-- **Zero solves / protocol failures:** inspect transcripts before longer tests. A small
-  model may need calibration. The artifacts remain available even when the quality gate fails.
+- **Zero solves / protocol failures:** inspect transcripts before longer tests. The gate
+  prints the actual model, reply/context budgets and stop-reason counts. `max_steps` and
+  `context_exhausted` need different calibration. Passing public tests does not guarantee
+  that a solution follows the full docstring. The archive remains available after a failure.
 - **Out of memory:** verify other model processes are stopped. Reduce context in both
   `server.args.max-model-len` and `workload.context_window_tokens`, then regenerate configs
   and recalibrate before comparisons. The baseline and candidate must use the same budgets.
@@ -104,6 +134,6 @@ Skip paired validation if the sweep kept the baseline. Download the updated arch
   the results archive before ending the current session.
 
 Official references: [vLLM GPU requirements](https://docs.vllm.ai/en/v0.31.0/getting_started/installation/gpu/),
-[Qwen model](https://huggingface.co/Qwen/Qwen2.5-Coder-3B-Instruct),
+[Qwen model](https://huggingface.co/Qwen/Qwen2.5-Coder-7B-Instruct-AWQ),
 [Colab limits](https://research.google.com/colaboratory/faq.html),
 [Kaggle notebooks](https://www.kaggle.com/docs/notebooks).

@@ -30,13 +30,16 @@ def test_notebook_pin_preserves_model_context_and_cpu_contract(tmp_path, cpus):
                  "--revision", "exact-sha", "--vllm", "/tmp/vllm/bin/vllm", "--cpus", cpus]) == 0
     for name in ("notebook.pinned.yaml", "notebook-smoke.pinned.yaml"):
         cfg = load_config(configs / name)
-        assert cfg.model.repository == "Qwen/Qwen2.5-Coder-3B-Instruct"
+        assert cfg.model.repository == "Qwen/Qwen2.5-Coder-7B-Instruct-AWQ"
         assert cfg.model.revision == cfg.model.tokenizer_revision == "exact-sha"
         command = cfg.server.start_command
         assert command[command.index("serve") + 1] == cfg.model.repository
         assert cfg.server.args["revision"] == cfg.server.args["tokenizer-revision"] == "exact-sha"
         assert cfg.server.args["dtype"] == "float16"
-        assert cfg.server.args["max-model-len"] == cfg.workload.context_window_tokens == 4096
+        assert cfg.server.args["max-model-len"] == cfg.workload.context_window_tokens == 8192
+        assert cfg.workload.max_steps == 12
+        assert cfg.generation.max_output_tokens_per_call == 1024
+        assert cfg.generation.temperature == 0 and cfg.generation.top_p == 1
         assert cfg.server.args["tensor-parallel-size"] == 1
         assert cfg.tools.executor == "local" and cfg.telemetry.live_metrics_port is None
         assert set(cfg.tools.worker_cpus + cfg.server.reserved_cpus) <= {int(c) for c in cpus.split(",")}

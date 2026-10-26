@@ -40,7 +40,8 @@ from .fixtures import EpisodeSpec
 from .model_client import ModelError, RequestContext
 from .protocol import Action, ProtocolError, parse_action, system_prompt
 from .telemetry import EventRecorder
-from .tools import ExecutorError, ToolError, ToolPool, edit_file, list_files, read_file, truncate, write_file
+from .tools import (ExecutorError, ToolError, ToolPool, edit_file, list_files, python_syntax_feedback,
+                    read_file, truncate, write_file)
 
 MESSAGE_OVERHEAD_TOKENS = 8
 TEST_OUTPUT_HEAD_FRACTION = 0.2  # keep mostly the tail, where pytest prints its summary
@@ -290,10 +291,10 @@ class Episode:
                 body = f"Contents of {path}:\n```\n{text}\n```"
             elif action.name == "write_file":
                 written = write_file(self.workspace, path, action.args["content"])
-                body = f"Wrote {written} bytes to {path}."
+                body = f"Wrote {written} bytes to {path}." + python_syntax_feedback(self.workspace, path)
             elif action.name == "edit_file":
                 edit_file(self.workspace, path, action.args["old"], action.args["new"])
-                body = f"Edited {path}."
+                body = f"Edited {path}." + python_syntax_feedback(self.workspace, path)
             elif action.name == "run_tests":
                 body = await self._run_tests()
             else:  # pragma: no cover - parse_action rejects unknown actions

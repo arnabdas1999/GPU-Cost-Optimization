@@ -18,8 +18,10 @@ The project has four parts:
 The model server is [vLLM](https://docs.vllm.ai/); this project builds the workload,
 the scheduling controls, the measurements and the experiment logic around it.
 
-**Status: working prototype; no real-GPU measurements yet.** Everything below runs and
-is tested on a laptop without a GPU, using a scripted model or a mock vLLM server.
+**Status: working prototype; GPU task-solving quality still needs calibration.** Initial
+Colab T4 runs completed without infrastructure errors but solved zero tasks. No GPU cost
+savings have been established. The software also runs and is tested on a laptop without
+a GPU, using a scripted model or a mock vLLM server.
 Results from those runs are labeled **SYNTHETIC** everywhere. They show that the
 software works, not that any configuration saves money. Start real-GPU testing with
 the Colab/Kaggle T4 notebook: a six-episode smoke test, optional pilot, and result download.
@@ -29,8 +31,9 @@ the Colab/Kaggle T4 notebook: a six-episode smoke test, optional pilot, and resu
 Choose a GPU runtime, then **Run all**. For Kaggle, import
 [`notebooks/gpu_smoke_test.ipynb`](notebooks/gpu_smoke_test.ipynb), select **T4** and enable
 **Internet**. See the [notebook runbook](docs/NOTEBOOK_RUNBOOK.md) for exact steps and
-troubleshooting. The default profile uses one GPU, the 3B coder model, FP16 and a
-4,096-token context; the longer pilot and A/A runs are off by default.
+troubleshooting. The calibration profile uses one GPU, the 7B AWQ coder model, FP16
+activations, an 8,192-token context and 12 replies per episode. The longer pilot and A/A
+runs are off by default; review the new smoke result before enabling them.
 
 The [Lightning runbook](docs/LIGHTNING_RUNBOOK.md) remains available for an L4 host.
 As of October 26, 2026, Lightning reports Studio access unavailable during its
@@ -134,15 +137,19 @@ The model replies with one JSON action per turn:
 {"action": "finish"}
 ```
 
-The harness runs the action and feeds the result back. Each episode has a fixed budget:
+The harness runs the action and feeds the result back. Each episode has a fixed budget.
+The baseline profile uses:
 
 - 6 model replies;
 - 512 output tokens per reply;
 - an 8,192-token context window;
 - a 300-second wall-clock backstop.
 
-A malformed or cut-off reply still uses up one of the 6 replies. When the budget runs
-out, the final code is graded as it stands.
+The notebook calibration profile uses 12 replies and 1,024 output tokens per reply,
+with the same 8,192-token context and 300-second backstop. Python edits receive syntax
+feedback without executing the generated code; invalid edits remain applied for repair.
+A malformed or cut-off reply still uses up one reply. When the budget runs out, the
+final code is graded as it stands.
 
 ### Three controls on concurrency
 
@@ -717,7 +724,7 @@ runs/, experiments/, reports/   generated output (runs/ and experiment folders a
 
 | Works today (tested without a GPU) | Not done yet |
 | --- | --- |
-| The six tasks with hidden tests; scripted and mock-vLLM runs end to end; separate episode and request caps; fixed, pinned tool CPU pool; timeouts with cancellation and drain checks; truncation and context handling; outcome fields; cost accounting with billing rounding; sweeps, paired trials, transition tables and acceptance with an A/A noise check; live exporter; PostgreSQL export; four Grafana dashboards; scripted Lightning setup and rehearsal | **Any measurement on a real GPU**; checking vLLM flags and metric names on a pinned release; the Lightning Port Viewer; held-out tasks (the `heldout` split is empty); vLLM-setting ablations; replaying recorded workloads to isolate serving performance |
+| The six tasks with hidden tests; scripted and mock-vLLM runs end to end; separate episode and request caps; fixed, pinned tool CPU pool; timeouts with cancellation and drain checks; truncation and context handling; outcome fields; cost accounting with billing rounding; sweeps, paired trials, transition tables and acceptance with an A/A noise check; live exporter; PostgreSQL export; four Grafana dashboards; scripted Lightning setup and rehearsal | **A useful GPU task solve rate and validated cost savings** (initial T4 runs completed with zero solves); the Lightning Port Viewer; held-out tasks (the `heldout` split is empty); vLLM-setting ablations; replaying recorded workloads to isolate serving performance |
 
 **Limitations to keep in mind**
 

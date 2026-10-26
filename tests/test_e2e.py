@@ -76,6 +76,30 @@ def test_editing_public_tests_does_not_count_as_a_fix(tmp_path):
     assert "exit code 0" in transcript["messages"][5]["content"]
 
 
+def test_model_receives_syntax_feedback_and_can_repair_before_grading(tmp_path):
+    cfg = config(generation={"max_output_tokens_per_call": 2048})
+    tasks = load_split(cfg, "dev")
+    scripts = {}
+    for task in tasks:
+        source = task.initial_files[0]
+        fixed = (task.grader_dir / "reference" / source).read_text(encoding="utf-8")
+        scripts[task.task_id] = [
+            ScriptedReply(json.dumps({"action": "write_file", "path": source,
+                                      "content": "def broken():\nreturn 1\n"})),
+            ScriptedReply(json.dumps({"action": "read_file", "path": source})),
+            ScriptedReply(json.dumps({"action": "write_file", "path": source, "content": fixed})),
+            ScriptedReply('{"action": "run_tests"}'),
+            ScriptedReply('{"action": "finish"}'),
+        ]
+    result, summary = run(cfg, tmp_path, scripted(cfg, scripts))
+    assert summary["successes"] == 6 and summary["outcomes"]["infra_error"] == 0
+    for task in tasks:
+        transcript = json.loads((result.path / "transcripts" / f"{task.task_id}__r0.json").read_text())
+        assert "syntax check failed" in transcript["messages"][3]["content"]
+        assert "def broken():\nreturn 1" in transcript["messages"][5]["content"]
+        assert "syntax check passed" in transcript["messages"][7]["content"]
+
+
 def test_wall_timeout_cancels_outstanding_request(tmp_path):
     cfg = config(workload={"episode_wall_timeout_s": 0.5}, model={"request_timeout_s": 30})
     tasks = load_split(cfg, "dev")
@@ -124,7 +148,10 @@ def test_context_exhaustion_stops_before_overflowing(tmp_path):
     reads = [ScriptedReply(json.dumps({"action": "read_file", "path": "tests/test_public.py"}))] * 6
     result, summary = run(cfg, tmp_path, scripted(cfg, {t.task_id: reads for t in tasks}))
     assert summary["stop_reasons"].get("context_exhausted", 0) == 6
-    assert all(1 <= e["steps"] < 6 for e in result.episodes)
+    # A longer system prompt can exhaust this deliberately tiny context before
+    # the first request. Other tasks still exercise growth from reported usage.
+    assert all(0 <= e["steps"] < 6 for e in result.episodes)
+    assert any(e["steps"] > 0 for e in result.episodes)
     budget = 1500 - 200
     for episode in result.episodes:
         transcript = json.loads((result.path / "transcripts" / f"{episode['episode_id']}.json").read_text())

@@ -1,19 +1,26 @@
-# Colab / Kaggle: one T4, FP16, local tools. Generate resolved configs with
+# Colab / Kaggle: one T4, AWQ weights with FP16 activations, local tools.
+# Calibration defaults; validate task quality before longer comparisons.
+# Generate resolved configs with
 # scripts/notebook-setup.sh, then start with notebook-smoke.pinned.yaml.
 extends: baseline.yaml
 name: notebook
 description: Development GPU testing in a Colab or Kaggle notebook
 
 model:
-  repository: Qwen/Qwen2.5-Coder-3B-Instruct
+  repository: Qwen/Qwen2.5-Coder-7B-Instruct-AWQ
+
+generation:
+  temperature: 0.0
+  top_p: 1.0
+  max_output_tokens_per_call: 1024
 
 server:
-  start_command: [vllm, serve, Qwen/Qwen2.5-Coder-3B-Instruct, "{args}"]
+  start_command: [vllm, serve, Qwen/Qwen2.5-Coder-7B-Instruct-AWQ, "{args}"]
   args:
     dtype: float16
-    max-model-len: 4096
+    max-model-len: 8192
     max-num-seqs: 2
-    max-num-batched-tokens: 4096
+    max-num-batched-tokens: 8192
     tensor-parallel-size: 1
     gpu-memory-utilization: 0.85
     # Avoid graph compilation in the first session; keep fixed in comparisons.
@@ -21,7 +28,8 @@ server:
   reserved_cpus: []
 
 workload:
-  context_window_tokens: 4096
+  max_steps: 12
+  context_window_tokens: 8192
   max_observation_chars: 3000
 
 execution:

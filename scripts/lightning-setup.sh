@@ -30,7 +30,7 @@ cd "$ROOT"
 PROFILE="${ROLLOUT_SETUP_PROFILE:-lightning}"
 case "$PROFILE" in
   lightning) DEFAULT_MODEL=Qwen/Qwen2.5-Coder-7B-Instruct; SMOKE_CONFIG=configs/smoke.pinned.yaml ;;
-  notebook) DEFAULT_MODEL=Qwen/Qwen2.5-Coder-3B-Instruct; SMOKE_CONFIG=configs/notebook-smoke.pinned.yaml ;;
+  notebook) DEFAULT_MODEL=Qwen/Qwen2.5-Coder-7B-Instruct-AWQ; SMOKE_CONFIG=configs/notebook-smoke.pinned.yaml ;;
   *) echo "unknown setup profile: $PROFILE" >&2; exit 2 ;;
 esac
 RUN_CONFIG="configs/$PROFILE.pinned.yaml"

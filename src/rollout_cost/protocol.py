@@ -31,7 +31,7 @@ You act by replying with exactly one JSON object per reply, and nothing else.
 Actions:
 {{"action": "read_file", "path": "src/example.py"}}
 {{"action": "edit_file", "path": "src/example.py", "old": "exact existing text", "new": "replacement text"}}
-    Replaces exactly one occurrence of "old". Prefer this for small changes.
+    Replaces exactly one occurrence of "old" literally. No indentation is added.
 {{"action": "write_file", "path": "src/example.py", "content": "complete new file contents"}}
 {{"action": "run_tests"}}
     Runs the public tests and shows their output.
@@ -40,9 +40,21 @@ Actions:
 
 Rules:
 - Paths are relative to the repository root.
+- The task message already contains the initial source files and public tests.
+- Implement the complete behavior in the task and docstrings. Public tests are
+  examples, not the complete specification.
+- For a short file that fits the output limit, write_file can replace the whole
+  file with correctly indented Python. Do not include Markdown in file contents.
+- For edit_file, include exact leading whitespace in both old and new. Every
+  line after a JSON newline needs its own indentation; it is not inherited from
+  the first line. Replace a complete block when changing control flow.
+- If an edit fails or tests report a syntax error, read the current file before
+  repairing it. Do not repeat an unchanged edit or the same missing old text.
+- Run the public tests after your fix. Repair failures before finish, and check
+  the full docstring even when public tests pass.
 - You have at most {max_steps} replies in total, including the finish reply.
 - Each reply is limited to {max_output_tokens} tokens. A reply that is cut off
-  is rejected, so keep edits small and use edit_file rather than write_file.
+  is rejected, so keep edits small when a complete file would not fit.
 - Hidden tests check the behavior described in the task and docstrings, not
   only the public tests.
 """

@@ -103,7 +103,12 @@ def check_result(run_dir: Path) -> dict:
         "no_wall_timeouts": summary["wall_timeouts"] == 0,
         "drain_verified": (summary.get("drain") or {}).get("server_idle", {}).get("verified") is True,
     }
-    print(json.dumps({"run": str(run_dir), "checks": checks, "outcomes": summary["outcomes"],
+    cfg = manifest.get("config") or {}
+    workload = cfg.get("workload") or {}
+    print(json.dumps({"run": str(run_dir), "model": (cfg.get("model") or {}).get("repository"),
+                      "budgets": {key: workload.get(key) for key in ("max_steps", "context_window_tokens")},
+                      "stop_reasons": summary.get("stop_reasons"),
+                      "checks": checks, "outcomes": summary["outcomes"],
                       "window_s": summary["window_s"]}, indent=2))
     failed = [name for name, ok in checks.items() if not ok]
     if failed:

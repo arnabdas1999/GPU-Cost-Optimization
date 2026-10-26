@@ -12,7 +12,7 @@ from rollout_cost.config import ConfigError, deep_merge, load_config, protected_
 from rollout_cost.cost import allocation_cost, billed_seconds, per_unit
 from rollout_cost.outcomes import derive_category
 from rollout_cost.protocol import ProtocolError, parse_action
-from rollout_cost.tools import ToolError, edit_file, resolve_workspace_path, truncate
+from rollout_cost.tools import ToolError, edit_file, python_syntax_feedback, resolve_workspace_path, truncate
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -171,6 +171,30 @@ def test_edit_file_requires_unique_match(tmp_path):
         edit_file(tmp_path, "a.py", "y = 1", "y = 2")
     edit_file(tmp_path, "a.py", "x = 1\nx", "x = 1\ny")
     assert (tmp_path / "a.py").read_bytes() == b"x = 1\ny = 1\n"
+
+
+def test_identical_edit_reports_no_change_and_preserves_file(tmp_path):
+    path = tmp_path / "a.py"
+    path.write_bytes(b"x = 1\n")
+    with pytest.raises(ToolError, match="identical"):
+        edit_file(tmp_path, "a.py", "x = 1", "x = 1")
+    assert path.read_bytes() == b"x = 1\n"
+
+
+def test_python_syntax_feedback_preserves_invalid_edit_without_execution(tmp_path):
+    path = tmp_path / "a.py"
+    invalid = b"def f():\n    try:\n    return 1\n"
+    path.write_bytes(invalid)
+    feedback = python_syntax_feedback(tmp_path, "a.py")
+    assert "syntax check failed" in feedback and "line 3" in feedback
+    assert "2:     try:" in feedback and "3:     return 1" in feedback
+    assert path.read_bytes() == invalid  # diagnosis never silently repairs a submission
+    path.write_text("raise RuntimeError('must not execute')\n")
+    assert "syntax check passed" in python_syntax_feedback(tmp_path, "a.py")
+    path.write_text("continue\n")
+    assert "not properly in loop" in python_syntax_feedback(tmp_path, "a.py")
+    (tmp_path / "notes.txt").write_text("not Python")
+    assert python_syntax_feedback(tmp_path, "notes.txt") == ""
 
 
 def test_docker_command_isolation_flags(tmp_path):
