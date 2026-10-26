@@ -224,7 +224,8 @@ async def _doctor_endpoint(cfg: Config) -> int:
 
 
 def cmd_run(args) -> int:
-    cfg = load_config(args.config)
+    overrides = {"workload": {"task_ids": args.task}} if args.task else None
+    cfg = load_config(args.config, overrides)
     for w in cfg.validate():
         print(f"warning: {w}", file=sys.stderr)
     run_dir, summary = run_sync(cfg, args.split, Path(args.runs_dir), label=args.label)
@@ -453,6 +454,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("run", help="run one cohort under one configuration")
     p.add_argument("--config", required=True)
     p.add_argument("--split", default="dev")
+    p.add_argument("--task", action="append", help="run only this task from the split (repeatable; development preflight)")
     p.add_argument("--label")
     p.add_argument("--runs-dir", default="runs")
     p.set_defaults(func=cmd_run)

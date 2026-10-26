@@ -90,6 +90,12 @@ def load_split(cfg: Config, split: str) -> list[Task]:
             if task_id in seen and seen[task_id] != name:
                 raise ConfigError(f"task {task_id!r} appears in splits {seen[task_id]!r} and {name!r}")
             seen[task_id] = name
+    if cfg.workload.task_ids is not None:
+        selected = set(cfg.workload.task_ids)
+        unknown = selected - set(task_ids)
+        if unknown:
+            raise ConfigError(f"tasks are not in split {split!r}: {sorted(unknown)}")
+        task_ids = [task_id for task_id in task_ids if task_id in selected]
     fixtures_dir = cfg.path(cfg.workload.fixtures_dir)
     graders_dir = cfg.path(cfg.workload.graders_dir)
     return [load_task(fixtures_dir / task_id, graders_dir) for task_id in task_ids]

@@ -100,6 +100,53 @@ def test_model_receives_syntax_feedback_and_can_repair_before_grading(tmp_path):
         assert "syntax check passed" in transcript["messages"][7]["content"]
 
 
+def test_whole_file_preflight_rejects_edits_and_grades_the_model_submission(tmp_path):
+    cfg = config(workload={"edit_mode": "whole_file", "task_ids": ["config_merge"]},
+                 generation={"max_output_tokens_per_call": 2048})
+    tasks = load_split(cfg, "dev")
+    assert [task.task_id for task in tasks] == ["config_merge"]
+    source = tasks[0].initial_files[0]
+    fixed = (tasks[0].grader_dir / "reference" / source).read_text(encoding="utf-8")
+    replies = [
+        ScriptedReply(json.dumps({"action": "edit_file", "path": source, "old": "elif value:", "new": "else:"})),
+        ScriptedReply('{"action": "finish"}'),
+        ScriptedReply(json.dumps({"action": "write_file", "path": source, "content": fixed})),
+        ScriptedReply('{"action": "run_tests"}'),
+        ScriptedReply('{"action": "finish"}'),
+    ]
+    seen = []
+
+    class RecordingClient(ScriptedModelClient):
+        async def complete(self, messages, max_tokens, ctx, attempt_log):
+            seen.append(ctx.response_schema)
+            return await super().complete(messages, max_tokens, ctx, attempt_log)
+
+    c = RecordingClient({"config_merge": replies}, base_latency_s=0.0, per_token_latency_s=0.0)
+    result, summary = run(cfg, tmp_path, c)
+    assert summary["successes"] == summary["cohort_size"] == 1
+    assert summary["protocol_errors"] == {"disabled_action": 1, "first_write_required": 1}
+    assert result.manifest["protected"]["workload.edit_mode"] == "whole_file"
+    assert result.manifest["protected"]["workload.task_ids"] == ["config_merge"]
+    assert all(s["properties"]["action"]["enum"] == ["write_file"] for s in seen[:3])
+    assert {s["properties"]["action"]["enum"][0] for s in seen[3]["anyOf"]} == {
+        "write_file", "read_file", "run_tests", "finish"}
+
+
+def test_whole_file_preflight_does_not_accept_a_partial_public_test_fix(tmp_path):
+    cfg = config(workload={"edit_mode": "whole_file", "task_ids": ["config_merge"]},
+                 generation={"max_output_tokens_per_call": 2048})
+    task = load_split(cfg, "dev")[0]
+    source = task.initial_files[0]
+    partial = (task.workspace_dir / source).read_text().replace("elif value:", "elif value is not None:")
+    replies = [ScriptedReply(json.dumps({"action": "write_file", "path": source, "content": partial})),
+               ScriptedReply('{"action": "run_tests"}'), ScriptedReply('{"action": "finish"}')]
+    result, summary = run(cfg, tmp_path, scripted(cfg, {task.task_id: replies}))
+    assert summary["successes"] == 0 and summary["outcomes"]["failed_after_finish"] == 1
+    transcript = json.loads((result.path / "transcripts/config_merge__r0.json").read_text())
+    assert "exit code 0" in transcript["messages"][5]["content"]
+    assert transcript["grade"]["outcome"] == "fail"
+
+
 def test_wall_timeout_cancels_outstanding_request(tmp_path):
     cfg = config(workload={"episode_wall_timeout_s": 0.5}, model={"request_timeout_s": 30})
     tasks = load_split(cfg, "dev")

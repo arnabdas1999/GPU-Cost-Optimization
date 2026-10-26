@@ -47,6 +47,7 @@ def render_run(manifest: dict, s: dict) -> str:
         f"| Episode cap / request cap | {s['max_active_episodes']} / {s['max_inflight_llm_requests']} |",
         f"| Tool workers (fixed CPU budget) | {s['tool_workers']} ({manifest['executor']['name']}) |",
         f"| Cache procedure | {cfg['server']['cache_reset']} |",
+        f"| File-edit mode | {cfg['workload'].get('edit_mode', 'literal')} |",
         f"| Budgets | {cfg['workload']['max_steps']} steps, {cfg['generation']['max_output_tokens_per_call']} output tokens/call, "
         f"{cfg['workload']['context_window_tokens']} context, {cfg['workload']['episode_wall_timeout_s']:.0f}s wall backstop |",
         "",

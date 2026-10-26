@@ -64,6 +64,28 @@ def test_missing_usage_stays_unknown():
     assert resp.finish_reason == "length"
 
 
+def test_per_request_action_schema_is_sent_to_vllm():
+    from rollout_cost.protocol import whole_file_schema
+
+    schema = whole_file_schema(first_write=True)
+
+    def handler(request):
+        payload = json.loads(request.content)
+        assert payload["response_format"] == {"type": "json_schema", "json_schema": {
+            "name": "rollout-action", "schema": schema}}
+        return httpx.Response(200, content=sse({"choices": [{"delta": {"content":
+            '{"action":"write_file","path":"src/a.py","content":"x = 1"}'}, "finish_reason": "stop"}]}))
+
+    async def go():
+        c = client(handler)
+        try:
+            return await c.complete([], 128, RequestContext("r", "e", "t", "req", 0, 1, schema), [])
+        finally:
+            await c.aclose()
+
+    assert '"write_file"' in asyncio.run(go()).content
+
+
 def test_retries_declared_server_errors_and_records_attempts():
     calls = []
 

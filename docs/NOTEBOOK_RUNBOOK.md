@@ -17,10 +17,13 @@ loopback inside the runtime. Use the notebook cells for testing and downloading 
 3. Setup installs the locked project on Python 3.12 and a configurable exact vLLM release
    (default `0.31.0`) in `/tmp/rollout-cost-vllm-<version>`. It resolves the model commit,
    downloads it, detects available CPUs, generates configs, validates fixtures and runs doctor.
-4. The smoke cell runs **six episodes, one at a time**. It shows the report and checks real
+4. The preflight cell tests **config_merge only**, with the same public and hidden graders.
+   It requires the model to write a complete replacement module rather than edit substrings.
+   If it fails, save the archive and inspect that one transcript before another GPU run.
+5. After preflight passes, the smoke cell runs **six episodes, one at a time**. It shows the report and checks real
    GPU status, no infrastructure errors, at least one success, protocol errors below 20%,
    no wall timeouts and verified drain. Review two transcripts as well.
-5. The final cell downloads `notebook-results.tgz` on Colab or displays its path/link on Kaggle.
+6. The final cell downloads `notebook-results.tgz` on Colab or displays its path/link on Kaggle.
    Download it, then end the GPU session with the platform's controls. Stopping vLLM does
    not end your allocated GPU session.
 
@@ -39,6 +42,8 @@ model caches and `.env` files.
 | Context | 8192 for both server and harness |
 | Episode budget | 12 replies; 1024 output tokens per reply |
 | Sampling | Greedy (`temperature: 0`, `top_p: 1`) |
+| File edits | `whole_file`: complete first write; subsequent replacements use `write_file`; no `edit_file` |
+| Output format | vLLM JSON-schema constraints for allowed actions; both schemas warmed before measurement |
 | GPUs | One; notebook selects GPU 0, tensor parallel size 1 |
 | Server request slots | 2 |
 | CUDA graphs | Disabled with `enforce-eager` for quicker startup; fixed across comparisons |
@@ -55,9 +60,13 @@ needed for testing.
 The earlier six-reply, 4096-context T4 runs completed without infrastructure errors but
 solved zero tasks. In the 7B AWQ run, five tasks ended with invalid Python and one missed
 behavior required by its docstring. Four exhausted the reply budget. The current defaults
-are a calibration proposal: literal-edit indentation is explained, file writes/edits get
-an immediate syntax check without executing generated code, and unchanged edits are rejected.
-Invalid code remains applied and hidden grading stays independent. These changes do not
+are a calibration proposal. A later 12-reply run also solved zero tasks: three submissions
+passed public tests but missed documented requirements, while three entered repeated edit loops.
+The notebook now disables literal `edit_file` actions and forces a complete first module write
+using vLLM's JSON-schema support. Subsequent corrections also replace the complete file.
+Python syntax feedback does not execute generated code. Invalid code remains applied and
+hidden grading stays independent. Schema constraints control response structure, not Python
+correctness. A one-task preflight checks actual model performance. These changes do not
 guarantee a solve rate; review the new smoke run before comparisons. The harness behavior
 hash distinguishes runs with the updated prompt and tools from older runs.
 
@@ -73,13 +82,33 @@ model cache and pinned revision. In a code cell, update the checkout:
 subprocess.run(["git", "pull", "--ff-only"], cwd=ROOT, check=True)
 ```
 
-Then rerun the smoke cell. The existing pinned configs extend `notebook.yaml`, so they
-inherit the new budgets and server context. The CLI starts a fresh process and loads the
-updated prompt and tools. No setup rerun or model download is needed for this case.
+Then run this one-task preflight in a new code cell:
+
+```python
+from IPython.display import Markdown, display
+PREFLIGHT_LABEL = "notebook-preflight-" + SESSION_TAG
+try:
+    run_logged(ROOT, RC + ["run", "--config", "configs/notebook-smoke.pinned.yaml",
+                          "--split", "dev", "--task", "config_merge", "--label", PREFLIGHT_LABEL],
+               "notebook-preflight.log")
+    PREFLIGHT_DIR = latest_run(ROOT, PREFLIGHT_LABEL)
+    display(Markdown((PREFLIGHT_DIR / "report.md").read_text()))
+    check_result(PREFLIGHT_DIR)
+finally:
+    archive_results(ROOT)
+```
+
+Rerun the six-task smoke cell only after this preflight passes. The existing pinned configs
+extend `notebook.yaml`, so they inherit `edit_mode: whole_file`. The CLI starts a fresh process
+and loads the updated prompt and tools. No setup rerun or model download is needed for this case.
 If Git reports conflicting local edits, preserve them and resolve the conflict before
 continuing. Use the new settings/setup cells for a fresh runtime or a different model.
 
-Do not compare an older six-reply run with a new run as evidence of a serving optimization.
+The `--task` option selects only tasks present in the chosen split and records the selection
+in the manifest. A one-task preflight is not comparable to the six-task cohort. Neither the
+file-edit mode nor task selection is a tunable serving parameter.
+
+Do not compare an older run with a different edit mode or budget as evidence of a serving optimization.
 After calibration, freeze the model, prompt, harness, budgets and sampling for both variants.
 
 ## Optional pilot and comparisons
@@ -135,5 +164,6 @@ Skip paired validation if the sweep kept the baseline. Download the updated arch
 
 Official references: [vLLM GPU requirements](https://docs.vllm.ai/en/v0.31.0/getting_started/installation/gpu/),
 [Qwen model](https://huggingface.co/Qwen/Qwen2.5-Coder-7B-Instruct-AWQ),
+[vLLM structured outputs](https://docs.vllm.ai/en/v0.31.0/features/structured_outputs/),
 [Colab limits](https://research.google.com/colaboratory/faq.html),
 [Kaggle notebooks](https://www.kaggle.com/docs/notebooks).

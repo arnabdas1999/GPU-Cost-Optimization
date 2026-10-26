@@ -38,7 +38,7 @@ from .admission import FifoSemaphore
 from .config import Config
 from .fixtures import EpisodeSpec
 from .model_client import ModelError, RequestContext
-from .protocol import Action, ProtocolError, parse_action, system_prompt
+from .protocol import Action, ProtocolError, parse_action, system_prompt, whole_file_schema
 from .telemetry import EventRecorder
 from .tools import (ExecutorError, ToolError, ToolPool, edit_file, list_files, python_syntax_feedback,
                     read_file, truncate, write_file)
@@ -123,6 +123,8 @@ class Episode:
         self.deadline = 0.0
         w = self.cfg.workload
         self.max_steps = w.max_steps
+        self.edit_mode = w.edit_mode
+        self._has_written = False
         self.max_output = self.cfg.generation.max_output_tokens_per_call
         self.input_budget = w.context_window_tokens - self.max_output
         self._last_usage: tuple[int, int] | None = None
@@ -196,7 +198,9 @@ class Episode:
         attempts: list[dict] = []
         record: dict[str, Any] = {"request_id": request_id, "step": r.steps, "message_count": len(sent),
                                   "estimated_prompt_tokens": estimate, "wait_s": waited}
-        ctx = RequestContext(self.env.run_id, self.spec.episode_id, self.spec.task.task_id, request_id, r.steps, self.spec.seed)
+        schema = whole_file_schema(first_write=not self._has_written) if self.edit_mode == "whole_file" else None
+        ctx = RequestContext(self.env.run_id, self.spec.episode_id, self.spec.task.task_id, request_id,
+                             r.steps, self.spec.seed, response_schema=schema)
         started = time.monotonic()
         self.emit("request_start", request_id=request_id, wait_s=round(waited, 6), estimated_prompt_tokens=estimate)
         status = "ok"
@@ -291,6 +295,7 @@ class Episode:
                 body = f"Contents of {path}:\n```\n{text}\n```"
             elif action.name == "write_file":
                 written = write_file(self.workspace, path, action.args["content"])
+                self._has_written = True
                 body = f"Wrote {written} bytes to {path}." + python_syntax_feedback(self.workspace, path)
             elif action.name == "edit_file":
                 edit_file(self.workspace, path, action.args["old"], action.args["new"])
@@ -319,7 +324,7 @@ class Episode:
         self.emit("episode_start", task_id=self.spec.task.task_id, rep=self.spec.rep, seed=self.spec.seed)
         try:
             self.messages = [
-                {"role": "system", "content": system_prompt(self.max_steps, self.max_output)},
+                {"role": "system", "content": system_prompt(self.max_steps, self.max_output, self.edit_mode)},
                 {"role": "user", "content": self._initial_message()},
             ]
             while True:
@@ -333,6 +338,11 @@ class Episode:
                 self.messages.append({"role": "assistant", "content": response.content})
                 try:
                     action = parse_action(response.content, response.finish_reason, self.cfg.workload.max_write_bytes)
+                    if self.edit_mode == "whole_file":
+                        if action.name == "edit_file":
+                            raise ProtocolError("disabled_action", "edit_file is disabled; use write_file with the complete source.")
+                        if not self._has_written and action.name != "write_file":
+                            raise ProtocolError("first_write_required", "First write the complete corrected source with write_file.")
                 except ProtocolError as exc:
                     protocol_errors[exc.kind] += 1
                     self.emit("protocol_error", kind=exc.kind)

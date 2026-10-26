@@ -12,6 +12,7 @@ from rollout_cost.config import ConfigError, deep_merge, load_config, protected_
 from rollout_cost.cost import allocation_cost, billed_seconds, per_unit
 from rollout_cost.outcomes import derive_category
 from rollout_cost.protocol import ProtocolError, parse_action
+from rollout_cost.fixtures import load_split
 from rollout_cost.tools import ToolError, edit_file, python_syntax_feedback, resolve_workspace_path, truncate
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -280,6 +281,22 @@ def test_protected_settings_exclude_only_tunables():
     assert "workload.max_steps" in protected
     assert "tools.worker_cpus" in protected
     assert "server.args.max-model-len" in protected
+    assert "workload.edit_mode" in protected and "workload.task_ids" in protected
+
+
+def test_preflight_task_selection_cannot_escape_split_and_preserves_order():
+    cfg = load_config(ROOT / "configs/baseline.yaml", {"workload": {"task_ids": ["config_merge", "retry_permanent"]}})
+    assert [task.task_id for task in load_split(cfg, "dev")] == ["retry_permanent", "config_merge"]
+    cfg.workload.task_ids = ["unknown"]
+    with pytest.raises(ConfigError, match="not in split"):
+        load_split(cfg, "dev")
+
+
+@pytest.mark.parametrize("overrides", [{"edit_mode": "unknown"}, {"task_ids": []},
+                                      {"task_ids": ["config_merge", "config_merge"]}, {"task_ids": "config_merge"}])
+def test_invalid_edit_mode_or_task_selection_is_rejected(overrides):
+    with pytest.raises(ConfigError):
+        load_config(ROOT / "configs/baseline.yaml", {"workload": overrides})
 
 
 def test_render_args():

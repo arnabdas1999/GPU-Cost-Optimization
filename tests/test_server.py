@@ -84,6 +84,23 @@ def test_preparation_stops_before_the_workload_if_idleness_is_unverified(tmp_pat
     ctrl.recorder.emit.assert_any_call("server_idle_before_run", **idle)
 
 
+def test_whole_file_schemas_are_warmed_before_the_measured_window(tmp_path):
+    from rollout_cost.model_client import ModelResponse
+
+    ctrl = controller(tmp_path)
+    ctrl.cfg.workload.edit_mode = "whole_file"
+    ctrl.client = Mock()
+    ctrl.client.complete = AsyncMock(return_value=ModelResponse('{"action":"finish"}', "stop", 10, 5, 0.01, 0.02))
+    result = asyncio.run(ctrl.warmup())
+    calls = ctrl.client.complete.call_args_list
+    assert result["requests"] == len(calls) and len(calls) >= 2
+    first_schema = calls[-2].args[2].response_schema
+    later_schema = calls[-1].args[2].response_schema
+    assert first_schema["properties"]["action"]["enum"] == ["write_file"]
+    assert {variant["properties"]["action"]["enum"][0] for variant in later_schema["anyOf"]} == {
+        "write_file", "read_file", "run_tests", "finish"}
+
+
 @pytest.mark.skipif(sys.platform != "linux", reason="Worker liveness check requires Linux /proc")
 @pytest.mark.parametrize("parent_already_exited", [False, True])
 def test_shutdown_kills_workers_even_if_the_parent_exits_first(tmp_path, parent_already_exited):

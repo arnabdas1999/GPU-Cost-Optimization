@@ -32,6 +32,7 @@ import httpx
 
 from .config import Config, render_command
 from .model_client import RequestContext
+from .protocol import whole_file_schema
 from .telemetry import EventRecorder, extract_signals, fetch_metrics, parse_prometheus, server_root
 
 
@@ -162,7 +163,17 @@ class ServerController:
             ctx = RequestContext(self.recorder.run_id, "warmup", "warmup", f"warmup-{i}", i, 0)
             resp = await self.client.complete(messages, item.get("max_tokens", 32), ctx, [])
             durations.append(resp.duration_s)
-        return {"requests": len(prompts), "durations_s": durations}
+        if self.cfg.workload.edit_mode == "whole_file":
+            # Compile both fixed action schemas before the measured window.
+            # These replies are only warm-up data; no generated file is executed.
+            for first_write in (True, False):
+                instruction = ('Reply with a write_file action for src/warmup.py containing pass and a newline.'
+                               if first_write else 'Reply with {"action":"finish"}.')
+                ctx = RequestContext(self.recorder.run_id, "warmup", "warmup", f"warmup-schema-{first_write}",
+                                     len(durations), 0, whole_file_schema(first_write))
+                resp = await self.client.complete([{"role": "user", "content": instruction}], 128, ctx, [])
+                durations.append(resp.duration_s)
+        return {"requests": len(durations), "durations_s": durations}
 
     async def snapshot(self) -> dict:
         text, error = await fetch_metrics(self.cfg.model.base_url)

@@ -68,6 +68,10 @@ class WorkloadConfig:
     fixtures_dir: str = "fixtures/tasks"
     graders_dir: str = "graders"
     splits_file: str = "fixtures/splits.yaml"
+    # Optional development subset, still constrained to the selected split.
+    task_ids: list[str] | None = None
+    # whole_file removes literal string editing and constrains JSON actions.
+    edit_mode: str = "literal"
     # Independent attempts per task. The cohort is tasks x repetitions, so a
     # concurrency sweep has a backlog larger than the episode cap.
     repetitions: int = 1
@@ -199,6 +203,12 @@ class Config:
             if getattr(self.execution, name) < 1:
                 errors.append(f"execution.{name} must be >= 1")
         w = self.workload
+        if w.edit_mode not in ("literal", "whole_file"):
+            errors.append("workload.edit_mode must be 'literal' or 'whole_file'")
+        if w.task_ids is not None and (not isinstance(w.task_ids, list) or not w.task_ids
+                                      or any(not isinstance(task, str) or not task for task in w.task_ids)
+                                      or len(set(w.task_ids)) != len(w.task_ids)):
+            errors.append("workload.task_ids must be a non-empty list of unique task IDs")
         if w.repetitions < 1 or w.max_steps < 1:
             errors.append("workload.repetitions and workload.max_steps must be >= 1")
         if self.generation.max_output_tokens_per_call >= w.context_window_tokens:

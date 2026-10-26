@@ -106,6 +106,7 @@ def check_result(run_dir: Path) -> dict:
     cfg = manifest.get("config") or {}
     workload = cfg.get("workload") or {}
     print(json.dumps({"run": str(run_dir), "model": (cfg.get("model") or {}).get("repository"),
+                      "edit_mode": workload.get("edit_mode", "literal"),
                       "budgets": {key: workload.get(key) for key in ("max_steps", "context_window_tokens")},
                       "stop_reasons": summary.get("stop_reasons"),
                       "checks": checks, "outcomes": summary["outcomes"],

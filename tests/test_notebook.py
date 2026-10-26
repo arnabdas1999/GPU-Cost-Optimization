@@ -38,6 +38,7 @@ def test_notebook_pin_preserves_model_context_and_cpu_contract(tmp_path, cpus):
         assert cfg.server.args["dtype"] == "float16"
         assert cfg.server.args["max-model-len"] == cfg.workload.context_window_tokens == 8192
         assert cfg.workload.max_steps == 12
+        assert cfg.workload.edit_mode == "whole_file"
         assert cfg.generation.max_output_tokens_per_call == 1024
         assert cfg.generation.temperature == 0 and cfg.generation.top_p == 1
         assert cfg.server.args["tensor-parallel-size"] == 1
@@ -100,6 +101,22 @@ def test_enabling_pilot_keeps_the_existing_smoke_label():
     # Simulate enabling the pilot after a smoke run, rather than restarting it.
     exec(settings.replace("RUN_PILOT = False", "RUN_PILOT = True"), namespace)
     assert namespace["SMOKE_LABEL"] == first_label and namespace["RUN_PILOT"] is True
+
+
+def test_preflight_cli_selects_only_the_requested_task(monkeypatch):
+    from rollout_cost import cli
+
+    seen = {}
+
+    def fake_run(cfg, split, runs_dir, label=None):
+        from rollout_cost.fixtures import load_split
+        seen["tasks"] = [task.task_id for task in load_split(cfg, split)]
+        return Path("unused"), {}
+
+    monkeypatch.setattr(cli, "run_sync", fake_run)
+    monkeypatch.setattr(cli, "_print_summary", lambda *args: None)
+    assert cli.main(["run", "--config", str(ROOT / "configs/synthetic.yaml"), "--task", "config_merge"]) == 0
+    assert seen["tasks"] == ["config_merge"]
 
 
 def test_notebook_profile_through_mock_server_and_archive(tmp_path):

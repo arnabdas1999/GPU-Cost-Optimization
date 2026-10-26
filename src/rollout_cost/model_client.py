@@ -31,6 +31,7 @@ class RequestContext:
     request_id: str
     step: int
     seed: int | None
+    response_schema: dict | None = None
 
 
 @dataclass
@@ -108,6 +109,9 @@ class OpenAICompatClient:
         }
         if ctx.seed is not None:
             payload["seed"] = ctx.seed
+        if ctx.response_schema is not None:
+            payload["response_format"] = {"type": "json_schema", "json_schema": {
+                "name": "rollout-action", "schema": ctx.response_schema}}
         started = time.monotonic()
         parts: list[str] = []
         finish_reason = None

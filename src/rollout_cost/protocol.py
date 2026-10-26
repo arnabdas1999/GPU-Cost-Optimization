@@ -60,6 +60,42 @@ Rules:
 """
 
 
+WHOLE_FILE_PROMPT = """\
+You fix a small Python module so it satisfies the complete task and its docstring.
+The user message contains the current source and public tests. Implement every
+requirement, including behavior not covered by the example tests.
+
+Your FIRST reply must write the complete corrected source module:
+{{"action": "write_file", "path": "src/example.py", "content": "complete Python file"}}
+Keep the required signatures. Include all imports and correct indentation.
+Encode newlines inside the JSON string. Do not put Markdown fences in file contents.
+
+After writing, run the public tests:
+{{"action": "run_tests"}}
+If a test or syntax check fails, rewrite the complete corrected module. You can
+inspect the current file with {{"action": "read_file", "path": "src/example.py"}}.
+Before submitting, check every docstring requirement, even if public tests pass.
+Submit with {{"action": "finish"}}.
+
+Literal edit_file actions are disabled. Use write_file for every correction.
+Reply with exactly one JSON action. You have {max_steps} replies, each limited to
+{max_output_tokens} output tokens. A cut-off reply is rejected without execution.
+"""
+
+
+def whole_file_schema(first_write: bool = False) -> dict:
+    """vLLM JSON schema: force a complete first write, then allow the tool loop."""
+    names = ("write_file",) if first_write else ("write_file", "read_file", "run_tests", "finish")
+    variants = []
+    for name in names:
+        fields = ACTION_FIELDS[name]
+        variants.append({"type": "object", "properties": {
+            "action": {"type": "string", "enum": [name]},
+            **{key: {"type": "string"} for key in fields},
+        }, "required": ["action", *fields], "additionalProperties": False})
+    return variants[0] if first_write else {"anyOf": variants}
+
+
 class ProtocolError(ValueError):
     """A reply that does not form a valid action. Reported back to the model."""
 
@@ -75,8 +111,9 @@ class Action:
     extra_text_chars: int = 0
 
 
-def system_prompt(max_steps: int, max_output_tokens: int) -> str:
-    return SYSTEM_PROMPT.format(max_steps=max_steps, max_output_tokens=max_output_tokens)
+def system_prompt(max_steps: int, max_output_tokens: int, edit_mode: str = "literal") -> str:
+    template = WHOLE_FILE_PROMPT if edit_mode == "whole_file" else SYSTEM_PROMPT
+    return template.format(max_steps=max_steps, max_output_tokens=max_output_tokens)
 
 
 def parse_action(text: str, finish_reason: str | None, max_payload_bytes: int) -> Action:

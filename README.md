@@ -24,7 +24,7 @@ savings have been established. The software also runs and is tested on a laptop 
 a GPU, using a scripted model or a mock vLLM server.
 Results from those runs are labeled **SYNTHETIC** everywhere. They show that the
 software works, not that any configuration saves money. Start real-GPU testing with
-the Colab/Kaggle T4 notebook: a six-episode smoke test, optional pilot, and result download.
+the Colab/Kaggle T4 notebook: a one-task preflight, six-episode smoke test, optional pilot, and result download.
 
 [![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/arnabdas1999/GPU-Cost-Optimization/blob/main/notebooks/gpu_smoke_test.ipynb)
 
@@ -34,6 +34,9 @@ Choose a GPU runtime, then **Run all**. For Kaggle, import
 troubleshooting. The calibration profile uses one GPU, the 7B AWQ coder model, FP16
 activations, an 8,192-token context and 12 replies per episode. The longer pilot and A/A
 runs are off by default; review the new smoke result before enabling them.
+The notebook uses complete-file replacements with constrained JSON actions, avoiding
+the literal-edit loops seen in the first GPU runs. Grading remains independent; the
+preflight must pass on the actual model before running the full cohort.
 
 The [Lightning runbook](docs/LIGHTNING_RUNBOOK.md) remains available for an L4 host.
 As of October 26, 2026, Lightning reports Studio access unavailable during its
