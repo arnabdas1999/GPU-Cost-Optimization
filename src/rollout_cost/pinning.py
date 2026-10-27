@@ -70,8 +70,16 @@ def pinned_configs(configs_dir: Path, revision: str, vllm_bin: str, cpus: list[i
         "model": model,
         "server": {"start_command": command, "args": args, "reserved_cpus": reserved},
         "tools": {"executor": executor, "worker_cpus": workers},
-        "cost": {"allocation_hourly_rate": rate, "rate_source": rate_source},
     }
+    # Omitted CLI rates inherit the profile's documented estimate. An explicit
+    # provider rate must not accidentally retain the reference price's source.
+    cost = {}
+    if rate is not None:
+        cost.update(allocation_hourly_rate=rate, rate_source=rate_source, rate_kind="recorded")
+    elif rate_source is not None:
+        cost["rate_source"] = rate_source
+    if cost:
+        pinned["cost"] = cost
     smoke_name = "smoke" if profile == "lightning" else "notebook-smoke"
     sweep_name = "sweep" if profile == "lightning" else "notebook-sweep"
     smoke = {"extends": f"{profile}.pinned.yaml", "name": smoke_name, "workload": {"repetitions": 1},

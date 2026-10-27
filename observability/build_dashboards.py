@@ -21,6 +21,10 @@ from rollout_cost.contract import DATASOURCE_UIDS, STATE_CODES  # noqa: E402
 OUT = ROOT / "observability" / "grafana" / "dashboards"
 PROM = {"type": "prometheus", "uid": DATASOURCE_UIDS["prometheus"]}
 PG = {"type": "grafana-postgresql-datasource", "uid": DATASOURCE_UIDS["postgres"]}
+COST_BASIS = """CASE WHEN hourly_rate IS NULL THEN 'Unknown rate' WHEN EXISTS (
+    SELECT 1 FROM run_warnings cost_warning WHERE cost_warning.run_id = runs.run_id
+    AND cost_warning.message LIKE 'Estimated equivalent cost:%')
+    THEN 'Estimated equivalent' ELSE 'Recorded rate' END"""
 
 STATE_COLORS = {
     "idle": "transparent", "queued": "#5c5c5c", "llm_wait": "#f2cc0c", "model_request": "#3274d9",
@@ -234,11 +238,12 @@ def runs_overview() -> dict:
         stat(L, "Sweeps", sql("SELECT count(*) AS sweeps FROM experiments WHERE kind = 'sweep'"), w=6),
     ]
     L.newline()
-    p.append(table(L, "Runs", sql("""
+    p.append(table(L, "Runs", sql(f"""
         SELECT run_id, CASE WHEN synthetic THEN 'SYNTHETIC' ELSE 'measured' END AS data, config_name, label,
                max_active_episodes AS episode_cap, max_inflight_llm_requests AS request_cap, tool_workers,
                successes, valid_episodes AS valid, cohort_size AS submitted, infra_errors, wall_timeouts,
-               window_s, window_cost, cost_per_success, warnings_count AS warnings, created_utc, start_ms, end_ms
+               window_s, window_cost, cost_per_success, {COST_BASIS} AS cost_basis,
+               warnings_count AS warnings, created_utc, start_ms, end_ms
         FROM runs ORDER BY created_utc DESC"""), w=24, h=10,
         overrides=[hidden("start_ms"), hidden("end_ms"),
                    {"matcher": {"id": "byName", "options": "run_id"},
@@ -276,10 +281,16 @@ def run_detail() -> dict:
                                      "properties": [{"id": "links", "value": [{"title": "Zoom to run", "url": jump}]}]}]),
     ]
     L.newline()
+    p.append(table(L, "Cost basis", sql(f"""
+        SELECT hourly_rate, currency, {COST_BASIS} AS basis,
+               (SELECT message FROM run_warnings cost_warning WHERE cost_warning.run_id = runs.run_id
+                AND cost_warning.message LIKE 'Estimated equivalent cost:%' ORDER BY ordinal LIMIT 1) AS assumption
+        FROM runs {where}"""), w=24, h=4))
+    L.newline()
     p += [
         stat(L, "Allocated window", sql(f"SELECT window_s FROM runs {where}"), unit="s", decimals=1),
         stat(L, "Window cost", sql(f"SELECT window_cost FROM runs {where}"), unit="currencyUSD", decimals=4,
-             description="Empty when the allocation price is unknown."),
+             description="See Cost basis for reference-price estimates and their source. Empty when the rate is unknown."),
         stat(L, "Cost per success", sql(f"SELECT cost_per_success FROM runs {where}"), unit="currencyUSD", decimals=4,
              description="Undefined (empty) with no successes or unknown price."),
         stat(L, "Success / valid / submitted", sql(f"""SELECT successes || ' / ' || valid_episodes || ' / ' || cohort_size
@@ -376,6 +387,8 @@ def experiments() -> dict:
                       max({col}) FILTER (WHERE role = 'candidate') AS candidate
                FROM experiment_trials {where} GROUP BY x_label ORDER BY min(ordinal)"""
     p = [
+        text(L, "Cost interpretation", "Cost values use recorded allocation rates or estimated equivalent rates. "
+             "Open a run's Cost basis for the assumption and source. Reference valuations are estimates, not Colab charges.", h=3),
         stat(L, "Decision", sql("SELECT verdict FROM experiments WHERE name = '$experiment'"), w=8, h=4,
              text_mode="value", color_mode="background", mappings=verdict_colors),
         stat(L, "Data", sql("""SELECT CASE WHEN synthetic THEN 'SYNTHETIC' ELSE 'measured' END AS data

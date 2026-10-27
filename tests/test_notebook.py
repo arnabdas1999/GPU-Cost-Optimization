@@ -45,7 +45,9 @@ def test_notebook_pin_preserves_model_context_and_cpu_contract(tmp_path, cpus):
         assert cfg.tools.executor == "local" and cfg.telemetry.live_metrics_port is None
         assert set(cfg.tools.worker_cpus + cfg.server.reserved_cpus) <= {int(c) for c in cpus.split(",")}
         assert not set(cfg.tools.worker_cpus) & set(cfg.server.reserved_cpus)
-        assert cfg.cost.allocation_hourly_rate is None
+        assert cfg.cost.allocation_hourly_rate == pytest.approx(0.539999)
+        assert cfg.cost.rate_kind == "estimated_equivalent"
+        assert "2026-10-26" in cfg.cost.rate_source and "cloud.google.com" in cfg.cost.rate_source
     smoke = load_config(configs / "notebook-smoke.pinned.yaml")
     assert smoke.workload.repetitions == smoke.execution.max_active_episodes == smoke.execution.max_inflight_llm_requests == 1
 

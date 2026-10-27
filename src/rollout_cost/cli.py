@@ -13,13 +13,14 @@ import subprocess
 import sys
 import tempfile
 from datetime import datetime, timezone
+from dataclasses import asdict
 from pathlib import Path
 
 import httpx
 import yaml
 
 from .analysis import (DEFAULT_ACCEPTANCE, RunFormatError, compare_runs, evaluate_acceptance, evaluate_experiment_file,
-                       load_run, portable, verdict)
+                       load_run, portable, price_run, verdict)
 from .config import TUNABLE_KEYS, Config, ConfigError, flatten, load_config
 from .fixtures import build_cohort, load_split
 from .grading import validate_task
@@ -386,16 +387,30 @@ def cmd_pin(args) -> int:
     print(f"CPUs {cpus}: server/runner {reserved or 'unpinned'}, tool workers {workers or 'unpinned'}")
     for path in written:
         print(f"wrote {path}")
-    if args.rate is None:
+    effective_cost = load_config(written[0]).cost
+    if effective_cost.allocation_hourly_rate is None:
         print("warning: no --rate given; cost will be reported as unavailable")
+    else:
+        print(f"Allocation pricing: {effective_cost.allocation_hourly_rate:.6f} "
+              f"{effective_cost.currency}/hour ({effective_cost.rate_kind}); {effective_cost.rate_source}")
     return 0
+
+
+def _cost_override(path: str | None) -> dict | None:
+    if path is None:
+        return None
+    cost = asdict(load_config(path).cost)
+    if cost["rate_kind"] != "estimated_equivalent":
+        raise ConfigError("--cost-config must declare cost.rate_kind: estimated_equivalent for post-run valuation")
+    return cost
 
 
 def cmd_export(args) -> int:
     from .export import ExportError, export
 
+    cost = _cost_override(args.cost_config)
     try:
-        result = export(args.db, Path(args.runs_dir), Path(args.experiments_dir), reset=args.reset)
+        result = export(args.db, Path(args.runs_dir), Path(args.experiments_dir), reset=args.reset, cost_config=cost)
     except ExportError as exc:
         print(f"export failed: {exc}", file=sys.stderr)
         return 1
@@ -409,10 +424,13 @@ def cmd_export(args) -> int:
 
 
 def cmd_report(args) -> int:
+    if args.cost_config and args.experiment:
+        raise ConfigError("--cost-config is supported with report --run; export supports experiment valuations")
     if args.run:
-        run = load_run(args.run)
+        run = price_run(load_run(args.run), _cost_override(args.cost_config))
         text = render_run(run.manifest, run.summary)
-        (run.path / "report.md").write_text(text, encoding="utf-8")
+        name = "report.estimated.md" if args.cost_config else "report.md"
+        (run.path / name).write_text(text, encoding="utf-8")
         print(text)
         return 0
     return _report_experiment(Path(args.experiment), Path(args.reports_dir))
@@ -491,6 +509,7 @@ def build_parser() -> argparse.ArgumentParser:
     group.add_argument("--run")
     group.add_argument("--experiment")
     p.add_argument("--reports-dir", default="reports")
+    p.add_argument("--cost-config", help="config containing estimated-equivalent pricing (with --run; writes report.estimated.md)")
     p.set_defaults(func=cmd_report)
 
     p = sub.add_parser("export", help="load runs, sweeps and experiments into PostgreSQL for Grafana")
@@ -498,6 +517,7 @@ def build_parser() -> argparse.ArgumentParser:
                    help="PostgreSQL URL (default: $RC_DB_URL or the docker compose database)")
     p.add_argument("--runs-dir", default="runs")
     p.add_argument("--experiments-dir", default="experiments")
+    p.add_argument("--cost-config", help="value all exported runs/trials using this config's estimated-equivalent pricing")
     p.add_argument("--reset", action="store_true", help="drop and recreate all tables first")
     p.set_defaults(func=cmd_export)
 
@@ -507,6 +527,11 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # Reports contain warning symbols; Windows pipes otherwise default to a
+    # legacy encoding and can fail after successfully writing the report file.
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
     argv = sys.argv[1:] if argv is None else argv
     if argv and argv[0] == "mock-server":
         from .mock_server import main as mock_main

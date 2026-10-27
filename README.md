@@ -476,6 +476,7 @@ sweep.yaml / synthetic-sweep.yaml   sweep definitions (a base config plus varian
 | | `reserved_cpus` | `[0,1,2,3]` | CPUs for vLLM and the runner. Must not overlap `worker_cpus` |
 | `telemetry` | `live_metrics_port` | `null` (9400 in Lightning and mock configs) | Turns on the live exporter for Grafana |
 | `cost` | `allocation_hourly_rate` | `null` | Your price per hour. `null` means cost is shown as unavailable |
+| | `rate_kind` | `recorded` | `estimated_equivalent` labels a reference allocation valuation. The notebook T4 profile uses about $0.54/hour; see [assumptions](docs/COST_ESTIMATES.md) |
 | | `rate_source`, `billing_granularity_seconds` | `null` | Where the price came from, and how billing rounds (e.g. 1, 60, 3600) |
 
 ### Tunable versus protected settings

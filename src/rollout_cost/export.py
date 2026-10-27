@@ -14,7 +14,7 @@ from datetime import datetime, timedelta
 from importlib import resources
 from pathlib import Path
 
-from .analysis import Evaluated, Run, evaluate_experiment_file, evaluate_sweep_selection, load_run, verdict
+from .analysis import Evaluated, Run, evaluate_experiment_file, evaluate_sweep_selection, load_run, price_run, verdict
 from .contract import EXPORT_SCHEMA_VERSION
 from .spans import build_spans, concurrency, episode_states
 
@@ -165,8 +165,9 @@ def run_rows(run: Run) -> dict[str, list[dict]]:
     return rows
 
 
-def _trial_row(experiment: str, ordinal: int, x_label: str, role: str, candidate: str, run: Run) -> dict:
-    s = run.summary
+def _trial_row(experiment: str, ordinal: int, x_label: str, role: str, candidate: str, run: Run,
+               cost_config: dict | None = None) -> dict:
+    s = price_run(run, cost_config).summary
     return {"experiment": experiment, "ordinal": ordinal, "x_label": x_label, "role": role, "candidate": candidate,
             "run_id": run.manifest["run_id"], "max_active_episodes": s["max_active_episodes"],
             "max_inflight_llm_requests": s["max_inflight_llm_requests"], "window_s": s["window_s"],
@@ -175,7 +176,7 @@ def _trial_row(experiment: str, ordinal: int, x_label: str, role: str, candidate
             "infra_errors": s["outcomes"]["infra_error"]}
 
 
-def experiment_rows(ev: Evaluated) -> dict[str, list[dict]]:
+def experiment_rows(ev: Evaluated, cost_config: dict | None = None) -> dict[str, list[dict]]:
     rows: dict[str, list[dict]] = {name: [] for name in EXPERIMENT_TABLES}
     name = ev.name
     if ev.kind == "paired":
@@ -186,8 +187,8 @@ def experiment_rows(ev: Evaluated) -> dict[str, list[dict]]:
                                     "trials": acc["trials"], "window_spread_pct": acc.get("window_spread_pct"),
                                     "chosen": None, "source_path": ev.meta.get("source")})
         for i, (base, cand) in enumerate(zip(ev.baseline_runs, ev.candidate_runs["candidate"])):
-            rows["experiment_trials"] += [_trial_row(name, 2 * i, f"trial {i + 1}", "baseline", "candidate", base),
-                                          _trial_row(name, 2 * i + 1, f"trial {i + 1}", "candidate", "candidate", cand)]
+            rows["experiment_trials"] += [_trial_row(name, 2 * i, f"trial {i + 1}", "baseline", "candidate", base, cost_config),
+                                          _trial_row(name, 2 * i + 1, f"trial {i + 1}", "candidate", "candidate", cand, cost_config)]
     else:
         base = ev.baseline_runs[0]
         baseline_variant = ev.meta["baseline_variant"]
@@ -198,7 +199,8 @@ def experiment_rows(ev: Evaluated) -> dict[str, list[dict]]:
                                     "chosen": ev.chosen, "source_path": ev.meta.get("source")})
         variants = [(baseline_variant, "baseline", base)] + [(v, "candidate", runs[0]) for v, runs in ev.candidate_runs.items()]
         variants.sort(key=lambda item: (item[2].summary["max_active_episodes"], item[2].summary["max_inflight_llm_requests"]))
-        rows["experiment_trials"] = [_trial_row(name, i, v, role, v, run) for i, (v, role, run) in enumerate(variants)]
+        rows["experiment_trials"] = [_trial_row(name, i, v, role, v, run, cost_config)
+                                     for i, (v, role, run) in enumerate(variants)]
     for candidate, acc in ev.acceptance.items():
         rows["acceptance_checks"] += [{"experiment": name, "candidate": candidate, "ordinal": i, "check_name": c["check"],
                                        "ok": c["ok"], "detail": c["detail"]} for i, c in enumerate(acc["checks"])]
@@ -261,7 +263,8 @@ def _replace(cur, rows: dict[str, list[dict]], key_column: dict[str, str], key: 
     return count
 
 
-def export(db_url: str, runs_dir: Path, experiments_dir: Path, reset: bool = False) -> dict:
+def export(db_url: str, runs_dir: Path, experiments_dir: Path, reset: bool = False,
+           cost_config: dict | None = None) -> dict:
     run_paths, paired, sweeps = discover(runs_dir, experiments_dir)
     report = {"runs": 0, "experiments": 0, "rows": 0, "skipped": []}
     run_keys = {t: "run_id" for t in RUN_TABLES}
@@ -270,7 +273,7 @@ def export(db_url: str, runs_dir: Path, experiments_dir: Path, reset: bool = Fal
         ensure_schema(conn, reset)
         for path in run_paths:
             try:
-                rows = run_rows(load_run(path))
+                rows = run_rows(price_run(load_run(path), cost_config))
             except (ExportError, KeyError, ValueError) as exc:
                 report["skipped"].append(f"{path.name}: {exc}")
                 continue
@@ -279,7 +282,7 @@ def export(db_url: str, runs_dir: Path, experiments_dir: Path, reset: bool = Fal
             report["runs"] += 1
         for path, evaluate in [*((p, evaluate_experiment_file) for p in paired), *((p, evaluate_sweep_selection) for p in sweeps)]:
             try:
-                rows = experiment_rows(evaluate(path))
+                rows = experiment_rows(evaluate(path), cost_config)
             except (OSError, KeyError, ValueError) as exc:
                 report["skipped"].append(f"{path.name}: {exc}")
                 continue

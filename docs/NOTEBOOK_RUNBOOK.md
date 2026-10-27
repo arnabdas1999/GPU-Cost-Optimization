@@ -113,6 +113,11 @@ After calibration, freeze the model, prompt, harness, budgets and sampling for b
 
 ## Optional pilot and comparisons
 
+Notebook costs use a documented **estimated equivalent T4 allocation rate** of
+about **$0.54/hour**, including reference CPU/RAM. This is not a Colab charge.
+The [cost estimate guide](COST_ESTIMATES.md) records the source, scope and commands
+for pricing already completed runs without rerunning the GPU.
+
 After the smoke check passes, change `RUN_PILOT = True` in the settings cell, execute
 that cell, then execute the pilot cell. Session labels are preserved when settings are
 rerun. Review budgets, protocol errors and solve counts, then freeze all non-tunable settings.

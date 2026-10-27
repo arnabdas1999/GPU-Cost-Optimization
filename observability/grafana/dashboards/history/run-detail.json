@@ -186,11 +186,50 @@
     },
     {
       "id": 3,
+      "type": "table",
+      "title": "Cost basis",
+      "gridPos": {
+        "x": 0,
+        "y": 3,
+        "w": 24,
+        "h": 4
+      },
+      "datasource": {
+        "type": "grafana-postgresql-datasource",
+        "uid": "rc-postgres"
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "grafana-postgresql-datasource",
+            "uid": "rc-postgres"
+          },
+          "rawSql": "SELECT hourly_rate, currency, CASE WHEN hourly_rate IS NULL THEN 'Unknown rate' WHEN EXISTS ( SELECT 1 FROM run_warnings cost_warning WHERE cost_warning.run_id = runs.run_id AND cost_warning.message LIKE 'Estimated equivalent cost:%') THEN 'Estimated equivalent' ELSE 'Recorded rate' END AS basis, (SELECT message FROM run_warnings cost_warning WHERE cost_warning.run_id = runs.run_id AND cost_warning.message LIKE 'Estimated equivalent cost:%' ORDER BY ordinal LIMIT 1) AS assumption FROM runs WHERE run_id = '$run'",
+          "format": "table",
+          "rawQuery": true,
+          "editorMode": "code",
+          "refId": "A"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "custom": {},
+          "mappings": []
+        },
+        "overrides": []
+      },
+      "options": {
+        "showHeader": true,
+        "cellHeight": "sm"
+      }
+    },
+    {
+      "id": 4,
       "type": "stat",
       "title": "Allocated window",
       "gridPos": {
         "x": 0,
-        "y": 3,
+        "y": 7,
         "w": 4,
         "h": 4
       },
@@ -235,12 +274,12 @@
       }
     },
     {
-      "id": 4,
+      "id": 5,
       "type": "stat",
       "title": "Window cost",
       "gridPos": {
         "x": 4,
-        "y": 3,
+        "y": 7,
         "w": 4,
         "h": 4
       },
@@ -283,15 +322,15 @@
         "textMode": "auto",
         "justifyMode": "center"
       },
-      "description": "Empty when the allocation price is unknown."
+      "description": "See Cost basis for reference-price estimates and their source. Empty when the rate is unknown."
     },
     {
-      "id": 5,
+      "id": 6,
       "type": "stat",
       "title": "Cost per success",
       "gridPos": {
         "x": 8,
-        "y": 3,
+        "y": 7,
         "w": 4,
         "h": 4
       },
@@ -337,12 +376,12 @@
       "description": "Undefined (empty) with no successes or unknown price."
     },
     {
-      "id": 6,
+      "id": 7,
       "type": "stat",
       "title": "Success / valid / submitted",
       "gridPos": {
         "x": 12,
-        "y": 3,
+        "y": 7,
         "w": 4,
         "h": 4
       },
@@ -385,12 +424,12 @@
       }
     },
     {
-      "id": 7,
+      "id": 8,
       "type": "stat",
       "title": "Episode cap full",
       "gridPos": {
         "x": 16,
-        "y": 3,
+        "y": 7,
         "w": 4,
         "h": 4
       },
@@ -435,12 +474,12 @@
       "description": "Share of the window during which max_active_episodes slots were all occupied."
     },
     {
-      "id": 8,
+      "id": 9,
       "type": "stat",
       "title": "Tool share of episode time",
       "gridPos": {
         "x": 20,
-        "y": 3,
+        "y": 7,
         "w": 4,
         "h": 4
       },
@@ -484,12 +523,12 @@
       }
     },
     {
-      "id": 9,
+      "id": 10,
       "type": "state-timeline",
       "title": "Episode timeline",
       "gridPos": {
         "x": 0,
-        "y": 7,
+        "y": 11,
         "w": 24,
         "h": 14
       },
@@ -605,12 +644,12 @@
       "description": "One row per episode: queued, waiting for a model-request slot, in a model request, waiting for a tool slot, running tests, file actions, grading, then the outcome."
     },
     {
-      "id": 10,
+      "id": 11,
       "type": "timeseries",
       "title": "Episodes active vs cap",
       "gridPos": {
         "x": 0,
-        "y": 21,
+        "y": 25,
         "w": 8,
         "h": 8
       },
@@ -667,12 +706,12 @@
       }
     },
     {
-      "id": 11,
+      "id": 12,
       "type": "timeseries",
       "title": "Model requests vs cap",
       "gridPos": {
         "x": 8,
-        "y": 21,
+        "y": 25,
         "w": 8,
         "h": 8
       },
@@ -729,12 +768,12 @@
       }
     },
     {
-      "id": 12,
+      "id": 13,
       "type": "timeseries",
       "title": "Tool slots vs workers",
       "gridPos": {
         "x": 16,
-        "y": 21,
+        "y": 25,
         "w": 8,
         "h": 8
       },
@@ -791,12 +830,12 @@
       }
     },
     {
-      "id": 13,
+      "id": 14,
       "type": "barchart",
       "title": "Where episode time went",
       "gridPos": {
         "x": 0,
-        "y": 29,
+        "y": 33,
         "w": 8,
         "h": 8
       },
@@ -840,12 +879,12 @@
       }
     },
     {
-      "id": 14,
+      "id": 15,
       "type": "table",
       "title": "Latency percentiles (s)",
       "gridPos": {
         "x": 8,
-        "y": 29,
+        "y": 33,
         "w": 8,
         "h": 8
       },
@@ -892,12 +931,12 @@
       }
     },
     {
-      "id": 15,
+      "id": 16,
       "type": "histogram",
       "title": "Model request duration",
       "gridPos": {
         "x": 16,
-        "y": 29,
+        "y": 33,
         "w": 8,
         "h": 8
       },
@@ -934,12 +973,12 @@
       }
     },
     {
-      "id": 16,
+      "id": 17,
       "type": "table",
       "title": "Outcomes",
       "gridPos": {
         "x": 0,
-        "y": 37,
+        "y": 41,
         "w": 6,
         "h": 8
       },
@@ -1018,12 +1057,12 @@
       }
     },
     {
-      "id": 17,
+      "id": 18,
       "type": "table",
       "title": "Stop reason \u00d7 grader outcome",
       "gridPos": {
         "x": 6,
-        "y": 37,
+        "y": 41,
         "w": 8,
         "h": 8
       },
@@ -1057,12 +1096,12 @@
       }
     },
     {
-      "id": 18,
+      "id": 19,
       "type": "table",
       "title": "Per task",
       "gridPos": {
         "x": 14,
-        "y": 37,
+        "y": 41,
         "w": 10,
         "h": 8
       },
@@ -1096,12 +1135,12 @@
       }
     },
     {
-      "id": 19,
+      "id": 20,
       "type": "timeseries",
       "title": "GPU utilization",
       "gridPos": {
         "x": 0,
-        "y": 45,
+        "y": 49,
         "w": 8,
         "h": 8
       },
@@ -1147,12 +1186,12 @@
       }
     },
     {
-      "id": 20,
+      "id": 21,
       "type": "timeseries",
       "title": "GPU memory used",
       "gridPos": {
         "x": 8,
-        "y": 45,
+        "y": 49,
         "w": 8,
         "h": 8
       },
@@ -1198,12 +1237,12 @@
       }
     },
     {
-      "id": 21,
+      "id": 22,
       "type": "timeseries",
       "title": "Server requests and KV cache",
       "gridPos": {
         "x": 16,
-        "y": 45,
+        "y": 49,
         "w": 8,
         "h": 8
       },
@@ -1248,12 +1287,12 @@
       }
     },
     {
-      "id": 22,
+      "id": 23,
       "type": "table",
       "title": "Warnings",
       "gridPos": {
         "x": 0,
-        "y": 53,
+        "y": 57,
         "w": 24,
         "h": 5
       },
@@ -1287,12 +1326,12 @@
       }
     },
     {
-      "id": 23,
+      "id": 24,
       "type": "table",
       "title": "Episodes",
       "gridPos": {
         "x": 0,
-        "y": 58,
+        "y": 62,
         "w": 24,
         "h": 10
       },

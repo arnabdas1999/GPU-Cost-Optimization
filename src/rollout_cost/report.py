@@ -23,7 +23,7 @@ def _pct(value) -> str:
 
 def render_run(manifest: dict, s: dict) -> str:
     cfg = manifest["config"]
-    cur = cfg["cost"]["currency"]
+    cur = s["cost"]["window"]["currency"]
     lines = [f"# Run {s['run_id']}", ""]
     if s["synthetic"]:
         reason = manifest.get("synthetic_reason") or "scripted model client"
@@ -78,6 +78,11 @@ def render_run(manifest: dict, s: dict) -> str:
         "",
         "## Allocation time and cost",
         "",
+        ("**Estimated equivalent cost** (reference allocation pricing)."
+         if cost.get("rate_kind") == "estimated_equivalent" else "Recorded allocation pricing."),
+        *(["Post-run valuation; original run.json and summary.json are unchanged."]
+          if cost.get("post_run_valuation") else []),
+        "",
         f"Rate: {_f(cost['window']['hourly_rate'])} {cur}/hour (source: {cost.get('rate_source') or 'not recorded'}).",
         "",
         "| Measure | Seconds | Billed seconds | Cost |",
@@ -125,6 +130,9 @@ def render_run(manifest: dict, s: dict) -> str:
 def render_comparison(comp: dict, acceptance: dict | None = None) -> str:
     b, c = comp["baseline_summary"], comp["candidate_summary"]
     lines = ["# Baseline vs candidate", "", f"- Baseline: `{comp['baseline']}`", f"- Candidate: `{comp['candidate']}`", ""]
+    for role, cost in comp.get("cost_assumptions", {}).items():
+        if cost.get("rate_kind") == "estimated_equivalent":
+            lines += [f"{role.title()} uses **estimated equivalent cost**: {cost.get('rate_source')}", ""]
     if not comp["valid"]:
         lines += ["> **INVALID COMPARISON**: " + "; ".join(comp["problems"]), ""]
     if comp["varied"]:

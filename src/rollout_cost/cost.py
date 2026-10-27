@@ -45,3 +45,28 @@ def per_unit(cost: float | None, count: int) -> float | None:
     if cost is None or count <= 0:
         return None
     return cost / count
+
+
+def cost_summary(window_s: float, run_s: float, valid: int, successes: int, config: dict) -> dict:
+    """Price measured allocation intervals under an explicitly recorded assumption."""
+    rate, currency = config["allocation_hourly_rate"], config["currency"]
+    window = allocation_cost("steady-state window", window_s, rate, currency)
+    inclusive = allocation_cost("run-inclusive (reset, warm-up, cohort, drain)", run_s, rate, currency,
+                                config.get("billing_granularity_seconds"))
+    return {"window": window.to_dict(), "run_inclusive": inclusive.to_dict(),
+            "per_valid_episode": per_unit(window.cost, valid), "per_success": per_unit(window.cost, successes),
+            "rate_source": config.get("rate_source"), "rate_kind": config.get("rate_kind", "recorded")}
+
+
+ESTIMATED_COST_PREFIX = "Estimated equivalent cost:"
+UNKNOWN_COST_WARNING = "Allocation price unknown: costs are unavailable (timings are still valid)."
+
+
+def cost_notice(cost: dict) -> str | None:
+    if cost["window"]["cost"] is None:
+        return UNKNOWN_COST_WARNING
+    if cost.get("rate_kind") == "estimated_equivalent":
+        window = cost["window"]
+        return (f"{ESTIMATED_COST_PREFIX} {window['hourly_rate']:.6f} {window['currency']}/hour; "
+                f"{cost.get('rate_source') or 'source not recorded'} This is a reference valuation, not a Colab bill.")
+    return None

@@ -11,13 +11,14 @@ individual responsiveness matters.
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from .contract import SUPPORTED_RUN_FORMATS
-from .cost import allocation_cost, per_unit
+from .cost import ESTIMATED_COST_PREFIX, UNKNOWN_COST_WARNING, cost_notice, cost_summary
 from .outcomes import CATEGORIES, GRADER_OUTCOMES, STOP_REASONS
 
 DEFAULT_ACCEPTANCE: dict[str, Any] = {
@@ -83,6 +84,23 @@ def load_run(path: str | Path) -> Run:
     return Run(path, manifest, episodes, summary)
 
 
+def price_run(run: Run, cost_config: dict | None) -> Run:
+    """Return a valuation for reporting/export; preserve measured artifacts and comparison inputs."""
+    if cost_config is None:
+        return run
+    s = deepcopy(run.summary)
+    if not s:
+        raise RunFormatError(f"{run.path}: no summary.json (run incomplete or aborted)")
+    s["cost"] = cost_summary(s["window_s"], s["run_inclusive_s"], s["valid_episodes"], s["successes"], cost_config)
+    s["cost"]["post_run_valuation"] = True
+    s["warnings"] = [w for w in s["warnings"]
+                     if w != UNKNOWN_COST_WARNING and not w.startswith(ESTIMATED_COST_PREFIX)]
+    notice = cost_notice(s["cost"])
+    if notice:
+        s["warnings"].append(notice)
+    return Run(run.path, run.manifest, run.episodes, s)
+
+
 def percentiles(values: list[float], points=(50, 90, 99)) -> dict[str, float | None]:
     data = sorted(v for v in values if v is not None)
     out: dict[str, float | None] = {"n": len(data)}
@@ -131,10 +149,6 @@ def summarize_run(manifest: dict, episodes: list[dict], timeline: dict) -> dict:
     start, end = timeline["window_start"], timeline["window_end"]
     window_s = max(0.0, end - start)
     run_inclusive_s = max(0.0, timeline["drain_end"] - timeline["prep_start"])
-    c = cfg["cost"]
-    window_cost = allocation_cost("steady-state window", window_s, c["allocation_hourly_rate"], c["currency"])
-    run_cost = allocation_cost("run-inclusive (reset, warm-up, cohort, drain)", run_inclusive_s,
-                               c["allocation_hourly_rate"], c["currency"], c["billing_granularity_seconds"])
 
     cap = min(cfg["execution"]["max_active_episodes"], n) if n else 0
     intervals = [(e["admitted_t"], e["agent_end_t"]) for e in episodes]
@@ -179,13 +193,7 @@ def summarize_run(manifest: dict, episodes: list[dict], timeline: dict) -> dict:
         "window_s": window_s,
         "run_inclusive_s": run_inclusive_s,
         "overhead_s": timeline.get("server_prep", {}).get("overhead_s"),
-        "cost": {
-            "window": window_cost.to_dict(),
-            "run_inclusive": run_cost.to_dict(),
-            "per_valid_episode": per_unit(window_cost.cost, valid),
-            "per_success": per_unit(window_cost.cost, successes),
-            "rate_source": c.get("rate_source"),
-        },
+        "cost": cost_summary(window_s, run_inclusive_s, valid, successes, cfg["cost"]),
         "steady_state_fraction": steady,
         "attribution": attribution,
         "tool_time_fraction": (sums["tool_s"] / service_total) if service_total else None,
@@ -258,8 +266,9 @@ def run_warnings(manifest: dict, s: dict) -> list[str]:
         warnings.append(f"Tool processes were still running after the cohort and were killed: {drain['leftover_tool_processes']}.")
     if cfg["server"]["cache_reset"] == "none" and not manifest["synthetic"]:
         warnings.append("Prefix cache was not reset before the run: results are exploratory.")
-    if s["cost"]["window"]["cost"] is None:
-        warnings.append("Allocation price unknown: costs are unavailable (timings are still valid).")
+    notice = cost_notice(s["cost"])
+    if notice:
+        warnings.append(notice)
     return warnings
 
 
@@ -363,6 +372,7 @@ def compare_runs(base: Run, cand: Run) -> dict:
         "per_task": dict(sorted(per_task.items())),
         "baseline_summary": _headline(bs),
         "candidate_summary": _headline(cs),
+        "cost_assumptions": {"baseline": bs["cost"], "candidate": cs["cost"]},
     }
 
 

@@ -6,6 +6,7 @@ import copy
 import dataclasses
 import hashlib
 import json
+import math
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -146,6 +147,7 @@ class CostConfig:
     allocation_hourly_rate: float | None = None
     currency: str = "USD"
     rate_source: str | None = None
+    rate_kind: str = "recorded"
     billing_granularity_seconds: int | None = None
 
 
@@ -223,8 +225,13 @@ class Config:
         if overlap:
             errors.append(f"tools.worker_cpus overlaps server.reserved_cpus: {sorted(overlap)}")
         rate = self.cost.allocation_hourly_rate
-        if rate is not None and rate < 0:
-            errors.append("cost.allocation_hourly_rate must be non-negative")
+        if rate is not None and (isinstance(rate, bool) or not isinstance(rate, (int, float))
+                                 or not math.isfinite(rate) or rate < 0):
+            errors.append("cost.allocation_hourly_rate must be finite and non-negative")
+        if self.cost.rate_kind not in ("recorded", "estimated_equivalent"):
+            errors.append("cost.rate_kind must be recorded or estimated_equivalent")
+        if self.cost.rate_kind == "estimated_equivalent" and (rate is None or not self.cost.rate_source):
+            errors.append("estimated equivalent cost requires an hourly rate and rate_source")
         if errors:
             raise ConfigError("; ".join(errors))
 

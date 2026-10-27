@@ -75,7 +75,7 @@ if ($LASTEXITCODE -ne 0) { throw 'Archive extraction failed' }
 $secretUrl = Read-Host 'rollout-history owner connection string' -AsSecureString
 $env:RC_DB_URL = [System.Net.NetworkCredential]::new('', $secretUrl).Password
 try {
-    uv run --extra dashboard --locked rollout-cost export
+    uv run --extra dashboard --locked rollout-cost export --cost-config configs/notebook.yaml
     if ($LASTEXITCODE -ne 0) { throw 'Database export failed' }
 } finally {
     Remove-Item Env:RC_DB_URL -ErrorAction SilentlyContinue
@@ -86,7 +86,10 @@ try {
 The exporter loads run events, outcomes, GPU samples and experiment metadata into
 PostgreSQL; Grafana does not consume `report.md` directly. Check that it reports
 at least one exported run and inspect any skipped-artifact warnings. This command
-uses all local runs/experiments. If you only want selected results public, use
+uses an explicitly labeled [T4 reference valuation](COST_ESTIMATES.md) of about
+$0.54/hour, including reference CPU/RAM, so older T4 results get estimated costs
+without rerunning the GPU. It preserves original measurement artifacts. It values
+all local runs/experiments at that rate. If you only want selected results public, use
 `--runs-dir` and `--experiments-dir` to point to a separate collection while keeping
 its experiment references valid.
 
