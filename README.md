@@ -1,55 +1,117 @@
 # Rollout Cost Lab
 
-Rollout Cost Lab measures what it costs, in rented GPU time, to run a batch of AI coding
-agents against a self-hosted model. It then tests whether a different serving
-configuration can do the same work for less without solving fewer tasks.
+**Find the cheapest way to run AI coding agents on your own GPU without making them worse
+at their job.**
 
-> For this model, GPU and workload, which configuration completes the same set of
-> multi-step coding-agent episodes at lower allocated-GPU cost, while keeping task
-> outcomes intact?
-
-The project has four parts:
-
-- a command-line tool that runs the agent episodes;
-- a set of small coding tasks with hidden tests;
-- cost and outcome accounting that compares configurations fairly;
-- Grafana dashboards, live and historical.
-
-The model server is [vLLM](https://docs.vllm.ai/); this project builds the workload,
-the scheduling controls, the measurements and the experiment logic around it.
-
-**Status: working prototype; GPU task-solving quality still needs calibration.** Initial
-Colab T4 runs completed without infrastructure errors but solved zero tasks. No GPU cost
-savings have been established. The software also runs and is tested on a laptop without
-a GPU, using a scripted model or a mock vLLM server.
-Results from those runs are labeled **SYNTHETIC** everywhere. They show that the
-software works, not that any configuration saves money. Start real-GPU testing with
-the Colab/Kaggle T4 notebook: a one-task preflight, six-episode smoke test, optional pilot, and result download.
-
+[![Live dashboard](https://img.shields.io/badge/Live%20dashboard-Grafana-orange)](https://rollout-cost-dashboard.onrender.com)
 [![Open in Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/arnabdas1999/GPU-Cost-Optimization/blob/main/notebooks/gpu_smoke_test.ipynb)
 
-Choose a GPU runtime, then **Run all**. For Kaggle, import
-[`notebooks/gpu_smoke_test.ipynb`](notebooks/gpu_smoke_test.ipynb), select **T4** and enable
-**Internet**. See the [notebook runbook](docs/NOTEBOOK_RUNBOOK.md) for exact steps and
-troubleshooting. The calibration profile uses one GPU, the 7B AWQ coder model, FP16
-activations, an 8,192-token context and 12 replies per episode. The longer pilot and A/A
-runs are off by default; review the new smoke result before enabling them.
-The notebook uses complete-file replacements with constrained JSON actions, avoiding
-the literal-edit loops seen in the first GPU runs. Grading remains independent; the
-preflight must pass on the actual model before running the full cohort.
+---
 
-The [Lightning runbook](docs/LIGHTNING_RUNBOOK.md) remains available for an L4 host.
-As of October 26, 2026, Lightning reports Studio access unavailable during its
-[incident investigation](https://lightning.ai/security-incident/); use the notebook route first.
+## What this project is for
+
+Teams that run AI agents in bulk on self-hosted open models (vLLM on rented GPUs) pay by
+the GPU-hour. Typical cases:
+
+- agent evaluations;
+- benchmark suites;
+- generating rollouts for post-training.
+
+How many agents you run at once, and how the model server is tuned, change how long the
+same batch takes, and so what it costs. Get it wrong and you either leave the GPU idle
+or make agents queue for it.
+
+**Rollout Cost Lab answers that with measurements, not guesses.** It runs a fixed batch
+of real multi-step coding-agent tasks against your model server, under two or more
+serving configurations. For each configuration it:
+
+1. **measures the rented GPU time** for the whole batch and converts it to dollars;
+2. **re-grades every task with hidden tests**, so a "cheaper" setting that solves fewer
+   tasks is caught;
+3. **shows where the time went** for every agent: waiting for the GPU, generating,
+   waiting for a CPU, running tests;
+4. **makes a decision you set the rules for in advance**, such as ACCEPTED, NOT ACCEPTED
+   or A/A CALIBRATION, with a noise check so a lucky run doesn't look like a saving;
+5. **publishes the evidence** to a shareable Grafana dashboard.
+
+**Example question it settles.** *"We run 4 agents at a time on one GPU. Would 8 finish
+the same batch sooner, and therefore cheaper, without solving fewer tasks?"* The lab runs
+the identical batch both ways, alternating the order, and reports:
+
+- the cost difference;
+- the per-task pass changes;
+- the trial-to-trial noise;
+- a verdict.
+
+Other questions it's built for:
+
+- Does turning on vLLM's prefix caching pay off for multi-turn agents?
+- Is the bottleneck the GPU or the tool execution?
+- What does one solved task cost on this GPU?
+
+### See it
+
+**Live dashboard: https://rollout-cost-dashboard.onrender.com**
+
+Public and read-only. It's on a free tier and sleeps when idle, so the first load can
+take about a minute.
+
+| Dashboard | What you'll find |
+| --- | --- |
+| **Runs** | Every imported run: real T4 runs from Colab and synthetic test runs, clearly labeled. Click any run id |
+| **Run detail** | An **episode timeline**: one row per agent, coloured by what it was doing every second. Also concurrency against the caps, where the time went, outcomes per task, GPU and server samples, and the cost basis |
+| **Experiments and sweeps** | The decision for a comparison, cost and successes per trial, every acceptance check, and which tasks flipped between pass and fail |
+
+### Where it stands (October 2026)
+
+The pipeline works end to end on a real GPU: a Colab T4 running
+`Qwen2.5-Coder-7B-Instruct-AWQ` under vLLM, with the results on the public dashboard.
+Model quality is still being calibrated, so **no cost saving has been claimed yet.**
+
+| Real T4 runs (all on the dashboard) | Result |
+| --- | --- |
+| First smoke tests (6 tasks each, literal text edits) | 0 of 6 solved. The model got stuck in edit loops or broke the code |
+| One-task preflight after switching to whole-file edits | Passed (twice) |
+| Latest smoke test (6 tasks, whole-file edits) | **2 of 6 solved**, 574.8 s of measured GPU time. That's about **$0.086** at the documented T4 reference rate of $0.54/h ([estimate basis](docs/COST_ESTIMATES.md)). It's a valuation, not a bill |
+
+Next: raise the solve rate, run the 24-episode pilot, measure the A/A noise floor, then
+the concurrency sweep and paired validation. The workflow is in
+[section 6](#6-finding-a-cheaper-configuration-the-workflow).
+
+### How the pieces fit together
+
+```
+ Colab / Kaggle T4 notebook          your laptop                          free hosting
+ ┌─────────────────────────┐   download   ┌────────────────────┐  export   ┌──────────────────────┐
+ │ vLLM + Qwen 7B (GPU)    │  results.tgz │ rollout-cost export│ ───────►  │ Neon PostgreSQL      │
+ │ rollout-cost run        │ ───────────► │  (reports, compare)│           │  rollout-history     │
+ │ preflight, smoke, pilot │              └────────────────────┘           └──────────┬───────────┘
+ └─────────────────────────┘                                              read-only   │
+                                                                                      ▼
+                                                                          ┌──────────────────────┐
+                                     anyone with the link ──────────────► │ Grafana on Render    │
+                                                                          │ (state in a second   │
+                                                                          │  Neon project)       │
+                                                                          └──────────────────────┘
+```
+
+There are three steps to publish a new result:
+
+1. Run the [Colab notebook](https://colab.research.google.com/github/arnabdas1999/GPU-Cost-Optimization/blob/main/notebooks/gpu_smoke_test.ipynb)
+   and download `notebook-results.tgz`.
+2. On your laptop, run `rollout-cost export` into the Neon history database.
+3. Refresh the dashboard.
+
+The public site's URL never changes. Setup is in [docs/FREE_HOSTING.md](docs/FREE_HOSTING.md).
 
 ---
 
 ## Contents
 
-1. [Why this exists](#1-why-this-exists)
+1. [Why measuring this is harder than it looks](#1-why-measuring-this-is-harder-than-it-looks)
 2. [How it works](#2-how-it-works)
 3. [Quick start (no GPU, about 5 minutes)](#3-quick-start-no-gpu-about-5-minutes)
-4. [Dashboards](#4-dashboards)
+4. [Dashboards: local, live and hosted](#4-dashboards-local-live-and-hosted)
 5. [Running on a real GPU](#5-running-on-a-real-gpu)
 6. [Finding a cheaper configuration: the workflow](#6-finding-a-cheaper-configuration-the-workflow)
 7. [Configuration guide](#7-configuration-guide)
@@ -62,7 +124,7 @@ As of October 26, 2026, Lightning reports Studio access unavailable during its
 
 ---
 
-## 1. Why this exists
+## 1. Why measuring this is harder than it looks
 
 An AI coding agent doesn't send one request and stop. It works in a loop:
 
@@ -70,16 +132,20 @@ An AI coding agent doesn't send one request and stop. It works in a loop:
 ask the model → model picks an action → run it (read a file, edit, run tests) → feed the result back → ask again
 ```
 
-While one agent waits for its tests to run, the GPU could be serving another agent. But
-running too many agents at once makes them queue for the GPU and compete for memory and
-CPU. So the usual serving benchmark, requests per second, doesn't tell you whether a
-whole batch of agent tasks finishes sooner or more cheaply.
+While one agent waits for its tests, the GPU could be serving another. But too many
+agents at once queue for the GPU and compete for memory and CPU. The usual serving
+benchmark, requests per second, can't tell you whether a whole batch of agent tasks
+finishes sooner or more cheaply.
 
-This project measures what you actually pay for: **allocated GPU time**, meaning the
-seconds the GPU host is rented, multiplied by its hourly price. It measures that for a
-fixed batch of agent tasks and checks that a cheaper configuration doesn't solve fewer
-tasks. That's useful anywhere agent trajectories are generated in bulk: agent
-evaluation, benchmark runs, rollout generation for post-training.
+There are also several easy ways to fool yourself:
+
+- A setting that looks faster may just solve fewer tasks.
+- Two runs of the same setting differ by several percent.
+- A warm cache from the previous run can make the next one look better.
+- Extra concurrency can quietly borrow more CPU.
+
+So the project measures the thing you pay for, **allocated GPU time × hourly price**,
+for a fixed batch, re-grades every task, and controls for each of these effects.
 
 ---
 
@@ -108,8 +174,8 @@ evaluation, benchmark runs, rollout generation for post-training.
                         │
         ┌───────────────┼───────────────────────────┐
         ▼               ▼                           ▼
-   compare / sweep / paired             rollout-cost export ──► PostgreSQL ──► Grafana
-   (acceptance decision)                live exporter :9400 ──► Prometheus ──► Grafana
+   compare / sweep / paired             rollout-cost export ──► PostgreSQL (local or Neon) ──► Grafana (local or Render)
+   (acceptance decision)                live exporter :9400 ──► Prometheus ──► Grafana (live view)
 ```
 
 ### The workload
@@ -140,19 +206,28 @@ The model replies with one JSON action per turn:
 {"action": "finish"}
 ```
 
-The harness runs the action and feeds the result back. Each episode has a fixed budget.
-The baseline profile uses:
+The harness runs the action and feeds the result back. There are two edit modes
+(`workload.edit_mode`):
 
-- 6 model replies;
-- 512 output tokens per reply;
-- an 8,192-token context window;
-- a 300-second wall-clock backstop.
+- **`literal`** (baseline): small exact-text replacements with `edit_file`.
+- **`whole_file`** (notebook profile): the model writes the complete module, and later
+  corrections replace the whole file too. Replies are constrained to valid actions with
+  vLLM's JSON-schema support. This removed the edit loops seen in the first T4 runs.
+  Python syntax errors are reported back without running the code. The constraint
+  controls the *shape* of a reply, not whether its code is correct; that's still
+  decided by the hidden tests.
 
-The notebook calibration profile uses 12 replies and 1,024 output tokens per reply,
-with the same 8,192-token context and 300-second backstop. Python edits receive syntax
-feedback without executing the generated code; invalid edits remain applied for repair.
-A malformed or cut-off reply still uses up one reply. When the budget runs out, the
-final code is graded as it stands.
+Each episode has a fixed budget:
+
+| Budget | Baseline profile | Notebook (T4) profile |
+| --- | --- | --- |
+| Model replies | 6 | 12 |
+| Output tokens per reply | 512 | 1,024 |
+| Context window | 8,192 | 8,192 |
+| Wall-clock backstop | 300 s | 300 s |
+
+A malformed or cut-off reply still uses up a reply. When the budget runs out, the final
+code is graded as it stands.
 
 ### Three controls on concurrency
 
@@ -200,8 +275,19 @@ allocation_cost = billed_seconds / 3600 × hourly_rate
   is shown as undefined, never as 0.
 
 Overlapping episode times are never added up, and the price is never scaled by GPU
-utilization. **An unknown price shows as "unavailable", never as $0.** Free credits still
-have a price, so record the on-demand rate.
+utilization. **An unknown price shows as "unavailable", never as $0.**
+
+There are two kinds of rate, and reports label which one was used:
+
+- **`recorded`:** a price you actually pay, such as a cloud on-demand rate.
+- **`estimated_equivalent`:** a documented reference valuation for hardware with no bill,
+  such as Colab. The notebook profile values a T4 at **$0.539999/h**: Google Cloud's
+  us-central1 rate for one T4 plus an n1-standard-4 host, checked 2026-10-26
+  ([details](docs/COST_ESTIMATES.md)).
+
+Completed runs can be revalued without rerunning the GPU. Use
+`report --run … --cost-config configs/notebook.yaml`, or pass `--cost-config` to
+`export`.
 
 ### Fair comparisons
 
@@ -214,14 +300,15 @@ identical:
 - the same cache-reset procedure.
 
 Before each measured run, the server is restarted (clearing vLLM's prefix cache) and
-warmed up identically. Restart refuses an endpoint that is still occupied after stop,
-and readiness requires the launched process to remain alive. Server idleness must be
-verified before and after the cohort for a comparison to be valid. `doctor` requires
-usable running/waiting request gauges, and preparation stops before the measured
-workload if idleness cannot be verified. A failed check after the cohort leaves run
-artifacts available for inspection and blocks acceptance. Each run must also be
-complete, contain exactly one terminal record per declared episode, and have summary
-decision values consistent with its records and timeline.
+warmed up identically:
+
+- Restart refuses an endpoint that is still occupied after the stop.
+- Readiness requires the launched process to stay alive.
+- The server must be verified idle before and after the cohort. If it can't be verified
+  beforehand, preparation stops before any measurement. If the check after the cohort
+  fails, the artifacts are kept for inspection but acceptance is blocked.
+- Each run must be complete, with exactly one terminal record per declared episode, and
+  its summary must agree with those records.
 
 A configuration is **accepted** only if it passes a rule you set in advance (see
 [section 8](#8-reading-the-results)). That rule includes a noise check, because
@@ -235,10 +322,10 @@ The rationale for each of these choices is in
 ## 3. Quick start (no GPU, about 5 minutes)
 
 **Requirements:** [uv](https://docs.astral.sh/uv/) and Git. Python is installed by uv if
-needed. Docker is optional; you need it for the dashboards.
+needed. Docker is optional; you need it for the local dashboards.
 
 ```bash
-git clone <repo-url> rollout-cost && cd rollout-cost
+git clone https://github.com/arnabdas1999/GPU-Cost-Optimization.git rollout-cost && cd rollout-cost
 uv sync --extra dashboard
 
 # 1. The six tasks behave as intended: starting code fails, reference fixes pass.
@@ -263,20 +350,53 @@ uv run rollout-cost sweep --config configs/synthetic-sweep.yaml        # 3 confi
 uv run rollout-cost compare --baseline runs/<id-a> --candidate runs/<id-b>
 ```
 
-Synthetic numbers show the software works. Don't read them as GPU results.
+Synthetic runs, scripted or mock, are labeled **SYNTHETIC** everywhere. They show that
+the software works, not GPU results.
 
 ---
 
-## 4. Dashboards
+## 4. Dashboards: local, live and hosted
 
 There are four Grafana dashboards over the same data the Markdown reports use:
 
 | Dashboard | Shows |
 | --- | --- |
 | **Live run** | While a run is in progress: phase, progress, episodes against the cap, request slots, tool slots, the vLLM queue and KV cache, tokens per second, prefix-cache hit rate, time to first token, GPU, and cost so far |
-| **Runs** | Every exported run, synthetic or measured, with outcomes, allocated time and cost. Click a run id to open its detail |
-| **Run detail** | **Episode timeline**: one row per episode, coloured by what it was doing (queued, waiting for the GPU, generating, waiting for a CPU, running tests, grading, outcome). Below it: concurrency against each cap, where the time went, latency, per-task results, GPU and server samples, warnings |
+| **Runs** | Every exported run, synthetic or measured, with outcomes, allocated time, cost and cost basis. Click a run id to open its detail |
+| **Run detail** | **Episode timeline**: one row per episode, coloured by what it was doing (queued, waiting for the GPU, generating, waiting for a CPU, running tests, grading, outcome). Below it: concurrency against each cap, where the time went, latency, per-task results, GPU and server samples, cost basis, warnings |
 | **Experiments and sweeps** | The decision, allocated window, cost and successes per trial or variant, every acceptance check, which episodes flipped between pass and fail, per-task passes |
+
+The history dashboards (the last three) read from PostgreSQL, filled by
+`rollout-cost export`. The live dashboard reads from Prometheus while a run is in
+progress.
+
+### Hosted and public: Render + Neon (free)
+
+This is the deployment behind https://rollout-cost-dashboard.onrender.com. It needs no
+GPU, no Docker and no running laptop.
+
+| Piece | Service | Role |
+| --- | --- | --- |
+| History database | Neon PostgreSQL, project `rollout-history` | Holds the exported results. Grafana reads it through a **read-only** `grafana_reader` role |
+| Grafana state | Neon PostgreSQL, project `grafana-state` | Grafana's own settings and users, kept separate so public queries can't reach them |
+| Dashboard site | Render free web service (`render.yaml`, `observability/render/`) | Grafana 13.2.4 with the three history dashboards provisioned from Git. Anonymous viewers, TLS to both databases |
+
+To publish new results, download the results archive from Colab, extract it in the
+repository, and export into the history database:
+
+```powershell
+# Windows PowerShell; paste the rollout-history OWNER connection string at the hidden prompt.
+$secretUrl = Read-Host 'rollout-history owner connection string' -AsSecureString
+$env:RC_DB_URL = [System.Net.NetworkCredential]::new('', $secretUrl).Password
+uv run --extra dashboard --locked rollout-cost export --cost-config configs/notebook.yaml
+Remove-Item Env:RC_DB_URL
+```
+
+Refresh the site and the new run appears. Re-exporting updates rows without creating
+duplicates. **Never commit or paste the owner connection string anywhere.** Keep it in a
+password manager, and give Grafana only the read-only role. The full setup is in
+[docs/FREE_HOSTING.md](docs/FREE_HOSTING.md): the Neon projects, the SQL for the reader
+role, the Render Blueprint, verification and the free-tier limits.
 
 ### On your laptop (Docker)
 
@@ -295,25 +415,18 @@ Start from **Runs** and click a run.
 | Prometheus | `127.0.0.1:9090` | Scrapes the runner (`:9400`) and the model server (`:8000`) |
 | PostgreSQL | `127.0.0.1:55432` | History database. Not 5432, so a locally installed PostgreSQL is left alone |
 
-- `rollout-cost export` is safe to rerun; it replaces each run's rows. Run it after
-  every session.
+- `rollout-cost export` is safe to rerun; it replaces each run's rows.
 - Stop the stack with `docker compose -f observability/compose.yaml down`.
 - To change logins or ports, copy `observability/.env.example` to `observability/.env`.
 
-### On a GPU host without Docker
+### On a GPU host without Docker (live view)
 
 ```bash
 bash scripts/observability-native.sh start   # downloads pinned Prometheus + Grafana, no root; live view only
 bash scripts/observability-native.sh stop    # stop when done: a running server keeps a Lightning Studio awake
 ```
 
-Historical dashboards run on the laptop: copy the `runs/` folder home and `export` it.
 More detail is in [observability/README.md](observability/README.md).
-
-To share historical results at a public HTTPS URL without keeping your laptop on,
-follow the [free Render + Neon hosting guide](docs/FREE_HOSTING.md). The site URL
-stays the same when you import new runs. The deployment includes read-only viewing
-and persistent Grafana state; the GPU experiments continue running separately.
 
 ---
 
@@ -321,23 +434,43 @@ and persistent Grafana state; the GPU experiments continue running separately.
 
 ### Colab / Kaggle (start here)
 
-Open [the GPU test notebook](https://colab.research.google.com/github/arnabdas1999/GPU-Cost-Optimization/blob/main/notebooks/gpu_smoke_test.ipynb)
-in Colab, select a GPU, and run all cells. On Kaggle, import the same notebook, select
-T4 and enable Internet. The [notebook runbook](docs/NOTEBOOK_RUNBOOK.md) covers setup,
-the smoke test, optional longer runs and downloading diagnostics. GPU execution still
-needs to be verified on the assigned runtime; CPU rehearsals establish software behavior.
+Open [the GPU notebook](https://colab.research.google.com/github/arnabdas1999/GPU-Cost-Optimization/blob/main/notebooks/gpu_smoke_test.ipynb),
+choose **Runtime > Change runtime type > GPU** (a T4), and **Run all**. On Kaggle, import
+`notebooks/gpu_smoke_test.ipynb`, select **T4** and enable **Internet**.
 
-### Lightning AI (alternative when Studio access returns)
+The notebook:
 
-The whole session is scripted and has been rehearsed in a plain Ubuntu container without
-a GPU. Follow [docs/LIGHTNING_RUNBOOK.md](docs/LIGHTNING_RUNBOOK.md). It's a timed
-checklist with a rough GPU-time budget and a stop/go check at every step, so free credits
-aren't spent debugging.
+1. checks the GPU, and rejects CPU or P100 sessions before any large download;
+2. installs the project and an exact vLLM release (default `0.31.0`);
+3. resolves and downloads `Qwen/Qwen2.5-Coder-7B-Instruct-AWQ`;
+4. writes pinned configs, validates the tasks and runs `doctor`;
+5. runs a **one-task preflight**, then a **six-episode smoke test**, one at a time;
+6. packages everything into `notebook-results.tgz` for download.
+
+The longer pilot and A/A runs are off by default; enable them after the smoke test looks
+healthy. If a cell fails, the archive is still built, so you can inspect what happened.
+The [notebook runbook](docs/NOTEBOOK_RUNBOOK.md) covers every step, the profile defaults
+and troubleshooting.
+
+**The notebook profile** (`configs/notebook.yaml`):
+
+- one T4, using AWQ 4-bit weights with FP16 activations;
+- an 8,192-token context;
+- 12 replies of up to 1,024 tokens each;
+- greedy sampling;
+- whole-file edits with JSON-schema-constrained actions;
+- 2 server request slots;
+- local tool execution;
+- T4 reference pricing.
+
+### Lightning AI (alternative)
+
+The whole session is scripted and has been rehearsed in a plain Ubuntu container. Follow
+[docs/LIGHTNING_RUNBOOK.md](docs/LIGHTNING_RUNBOOK.md).
 
 ```bash
 # On the CPU Studio, set VLLM_VERSION to an exact release first:
 bash scripts/lightning-setup.sh --prepare
-
 # After switching to the L4 GPU, restore VLLM_VERSION and set RATE and RATE_SOURCE:
 bash scripts/lightning-setup.sh
 uv run rollout-cost run --config configs/smoke.pinned.yaml --split dev       # 6 episodes, one at a time
@@ -346,32 +479,19 @@ uv run rollout-cost run --config configs/lightning.pinned.yaml --split dev   # p
 
 `lightning-setup.sh` does the following:
 
-- checks the GPU;
-- installs uv and the project;
-- synchronizes and verifies your exact vLLM version, even when its environment exists;
-- uses a version-specific environment by default (`~/vllm-venv-$VLLM_VERSION`);
-- resolves the selected model's exact commit and downloads it;
+- checks the GPU and CUDA;
+- installs and verifies your exact vLLM version, in its own version-specific environment;
+- resolves the model's exact commit and downloads it;
 - splits the CPUs between vLLM and the tool workers;
-- writes `configs/lightning.pinned.yaml`, `smoke.pinned.yaml` and `sweep.pinned.yaml`;
+- writes pinned configs;
 - validates the tasks;
 - runs `doctor --start-server`.
 
-`--prepare` installs the dependencies and downloads the model on CPU, then exits without
-checking the GPU, building containers, writing pinned configs or starting a server.
-After switching machines, restore any `MODEL_REPO` and `VLLM_VENV` overrides as well as
-`VLLM_VERSION`. The selected repository is used for both the download and serving config.
-The GPU setup records the vLLM package inventory in `vllm-packages.txt` and checks CUDA
-availability before attempting to start the server.
-
-Docker isn't required. Without it, tests run as local processes pinned to their CPU.
-That keeps the CPU budget fixed but doesn't isolate generated code, and the report says
-so.
-
-To rehearse the whole Lightning session on your laptop (needs Docker):
-
-```bash
-bash scripts/rehearse-lightning.sh
-```
+`--prepare` does the downloads on a CPU machine first. As of October 26, 2026, Lightning
+reported Studio access unavailable during an
+[incident investigation](https://lightning.ai/security-incident/); use the notebook
+route first. To rehearse the Lightning session locally (needs Docker), run
+`bash scripts/rehearse-lightning.sh`.
 
 ### Any other Linux GPU host
 
@@ -381,18 +501,19 @@ bash scripts/rehearse-lightning.sh
 3. Edit `configs/local.yaml`:
    - the model revision;
    - `server.start_command` and `server.args`, checking each flag against
-     `vllm serve --help` for your version;
+     `vllm serve --help`;
    - `server.reserved_cpus` and `tools.worker_cpus`;
    - the price.
 
-   Or run `bash scripts/lightning-setup.sh` on a Linux GPU host.
+   Or run `bash scripts/lightning-setup.sh` on the host.
 4. Run `uv run rollout-cost doctor --config configs/baseline.yaml --start-server` and fix
    anything it flags.
 5. Follow the workflow below.
 
-**Model and hardware assumptions:** `Qwen/Qwen2.5-Coder-7B-Instruct` in BF16, on one
-NVIDIA GPU with 24–48 GB of memory. A smaller GPU, such as a 16 GB T4, needs a smaller or
-quantized model. That's a different experiment, so record it as one.
+**Model and hardware assumptions:** the baseline profile uses
+`Qwen/Qwen2.5-Coder-7B-Instruct` in BF16, on one GPU with 24–48 GB. A 16 GB T4 uses the
+AWQ build in the notebook profile instead. Comparisons are only valid within one model,
+GPU and profile.
 
 ---
 
@@ -408,28 +529,24 @@ that is really noise.
 | **3. A/A noise floor** | `paired --baseline X --candidate X --trials 2 --name aa` | The same config run twice. The spread between the runs is the smallest saving you can believe |
 | **4. Sweep** | `sweep --config <sweep config>` | Up to 4 alternative configurations, one run each. Writes `experiments/<sweep>/chosen.yaml`, the cheapest variant that passed the rule |
 | **5. Paired validation** | `paired --baseline <base> --candidate experiments/<sweep>/chosen.yaml --trials 2` | Alternating baseline/candidate runs, scored by the full acceptance rule. Writes `experiments/<name>.yaml` and `reports/<name>.md` |
-| **6. Look and share** | `export`, then the dashboards, plus `reports/` | The decision, and the evidence behind it |
+| **6. Publish** | `export` (local or Neon), then the dashboards, plus `reports/` | The decision, and the evidence behind it, at a shareable link |
 
-**What a sweep varies by default** (`configs/sweep.yaml`):
+**What a sweep varies by default:**
 
-| Variant | Episode cap | Request cap |
+| Profile | Variants (episode cap / request cap) | Baseline |
 | --- | --- | --- |
-| `active-2` | 2 | 2 |
-| `active-4` (baseline) | 4 | 4 |
-| `active-8` | 8 | 4 |
-
-The fixed tool pool shows whether extra concurrency helps the GPU, or just creates
-queues for CPU.
+| Baseline / Lightning (`configs/sweep.yaml`) | `active-2` 2/2, `active-4` 4/4, `active-8` 8/4 | `active-4` |
+| Notebook T4 (`notebook-sweep.pinned.yaml`) | `active-1` 1/1, `active-2` 2/2, `active-4` 4/2 | `active-2` |
 
 **Ideas to test next**, one change at a time:
 
 - a vLLM scheduler limit: `server.args.max-num-seqs` or `max-num-batched-tokens`;
-- prefix caching on or off: `server.args.enable-prefix-caching`. The mock server shows
-  heavy prefix reuse in multi-turn histories, so this is worth measuring for real;
+- prefix caching on or off: `server.args.enable-prefix-caching`. Multi-turn agents reuse
+  their own conversation prefixes heavily;
 - a different ratio of request cap to episode cap.
 
 **If nothing is cheaper, report that.** "The baseline is already efficient" or "tool
-execution dominates" are useful results for an infrastructure discussion.
+execution dominates" are useful infrastructure results.
 
 ---
 
@@ -444,12 +561,17 @@ fails loudly instead of being ignored.
 ```
 local.yaml            hardware: model, vLLM command and flags, CPU layout, price
   └─ baseline.yaml    budgets, repetitions, concurrency for measured runs
+       ├─ notebook.yaml           Colab/Kaggle T4: AWQ model, whole-file edits, T4 reference price
+       │    └─ notebook.pinned.yaml, notebook-smoke.pinned.yaml, notebook-sweep.pinned.yaml   (generated)
        ├─ lightning.yaml          Lightning Studio specifics (local executor, live metrics)
-       │    └─ lightning.pinned.yaml, smoke.pinned.yaml   generated per session by `rollout-cost pin`
+       │    └─ lightning.pinned.yaml, smoke.pinned.yaml, sweep.pinned.yaml                     (generated)
        └─ (your variants)
 synthetic.yaml        scripted model, no GPU   └─ mock-vllm.yaml   real HTTP path against the mock server
 sweep.yaml / synthetic-sweep.yaml   sweep definitions (a base config plus variants)
 ```
+
+`*.pinned.yaml` files are written per GPU session by `rollout-cost pin`, which the setup
+scripts call. They record the resolved model commit, vLLM path, CPU split and price.
 
 ### The settings that matter most
 
@@ -459,10 +581,11 @@ sweep.yaml / synthetic-sweep.yaml   sweep definitions (a base config plus varian
 | | `base_url`, `served_name` | `http://127.0.0.1:8000/v1`, `coding-model` | Where the model is served |
 | | `repository`, `revision` | Qwen2.5-Coder-7B-Instruct, *pin it* | Recorded in every run. `doctor` fails on `REPLACE_*` placeholders |
 | | `request_timeout_s`, `max_request_retries` | 120, 1 | Per-request limit. Only connection errors and 502/503/504 are retried |
-| `generation` | `temperature`, `top_p`, `seed` | 0.2, 0.95, 42 | Sampling. Each episode gets its own seed derived from this one |
+| `generation` | `temperature`, `top_p`, `seed` | 0.2, 0.95, 42 | Sampling (the notebook profile uses greedy: 0 and 1.0) |
 | | `max_output_tokens_per_call` | 512 | Output cap per reply. A cut-off reply is rejected and uses up a reply |
 | `workload` | `repetitions` | 4 | Independent attempts per task (cohort = 6 tasks × 4 = 24 episodes) |
 | | `max_steps` | 6 | Model replies per episode |
+| | `edit_mode` | `literal` | `literal` (exact-text `edit_file`) or `whole_file` (complete-file writes, schema-constrained) |
 | | `context_window_tokens` | 8192 | Must equal vLLM's `max-model-len` |
 | | `episode_wall_timeout_s` | 300 | Safety backstop. Hits are reported, and comparisons refuse an increase |
 | | `max_observation_chars` | 6000 | Tool output is cut to this before it goes to the model |
@@ -475,8 +598,8 @@ sweep.yaml / synthetic-sweep.yaml   sweep definitions (a base config plus varian
 | | `args` | `max-model-len: 8192`, `dtype: bfloat16`, … | vLLM flags as `key: value`. `true` gives `--flag`, `false` gives `--no-flag`, `null` drops it. `max-num-seqs`, `max-num-batched-tokens` and `enable-prefix-caching` are **tunable** |
 | | `reserved_cpus` | `[0,1,2,3]` | CPUs for vLLM and the runner. Must not overlap `worker_cpus` |
 | `telemetry` | `live_metrics_port` | `null` (9400 in Lightning and mock configs) | Turns on the live exporter for Grafana |
-| `cost` | `allocation_hourly_rate` | `null` | Your price per hour. `null` means cost is shown as unavailable |
-| | `rate_kind` | `recorded` | `estimated_equivalent` labels a reference allocation valuation. The notebook T4 profile uses about $0.54/hour; see [assumptions](docs/COST_ESTIMATES.md) |
+| `cost` | `allocation_hourly_rate` | `null` (notebook: 0.539999) | Price per hour. `null` means cost is shown as unavailable |
+| | `rate_kind` | `recorded` | `estimated_equivalent` labels a reference valuation ([assumptions](docs/COST_ESTIMATES.md)) |
 | | `rate_source`, `billing_granularity_seconds` | `null` | Where the price came from, and how billing rounds (e.g. 1, 60, 3600) |
 
 ### Tunable versus protected settings
@@ -491,7 +614,8 @@ Only these settings may differ between a baseline and a candidate:
 
 **Everything else is protected.** If any protected setting differs, `compare` marks the
 comparison **INVALID** and lists the differences. Protected settings include budgets,
-model revision, prompts, CPU layout, task hashes, harness version and cache procedure.
+model revision, prompts, edit mode, CPU layout, task hashes, harness version and cache
+procedure.
 
 ### Common changes
 
@@ -500,6 +624,7 @@ model revision, prompts, CPU layout, task hashes, harness version and cache proc
 ```yaml
 cost:
   allocation_hourly_rate: 0.80
+  rate_kind: recorded
   rate_source: "Lightning AI L4 on-demand, 2026-10-25"
   billing_granularity_seconds: 1
 ```
@@ -507,7 +632,7 @@ cost:
 **Try a different concurrency.** Make a small variant file, for example `configs/active-8.yaml`:
 
 ```yaml
-extends: baseline.yaml          # or lightning.pinned.yaml on Lightning
+extends: baseline.yaml          # or notebook.pinned.yaml / lightning.pinned.yaml on a GPU session
 name: active-8
 execution:
   max_active_episodes: 8
@@ -521,7 +646,7 @@ uv run rollout-cost run --config configs/active-8.yaml --split dev
 uv run rollout-cost compare --baseline runs/<baseline-id> --candidate runs/<active-8-id>
 ```
 
-**Test a vLLM setting.** Add a variant to `configs/sweep.yaml`:
+**Test a vLLM setting.** Add a variant to the sweep file:
 
 ```yaml
   - name: active-4-no-prefix-cache
@@ -539,6 +664,10 @@ draining, and the report warns about it.
 or set `acceptance:` in a sweep file. The keys are listed in
 [section 8](#8-reading-the-results). Decide the rule *before* looking at results.
 
+**Revalue past runs.** Run `report --run runs/<id> --cost-config configs/notebook.yaml`.
+That writes `report.estimated.md` and leaves the original artifacts untouched. For the
+dashboards, use `export --cost-config configs/notebook.yaml`.
+
 **Use a different model or server.** Change `model.repository`, `model.served_name`,
 `server.start_command` and `server.args`, then rerun `doctor --start-server`. Any
 OpenAI-compatible streaming server works if it reports token usage. Server metrics are
@@ -552,7 +681,8 @@ optional, and missing ones are reported as unavailable.
 
 - **Outcomes:** every episode in exactly one category, with all denominators shown.
 - **Allocation time and cost:** the steady-state window, the run-inclusive total, cost
-  per valid episode and cost per success.
+  per valid episode and cost per success, with the cost basis (recorded or estimated
+  rate, and its source).
 - **Where episode time went:** the share of time spent waiting for a request slot, in
   model requests, waiting for a tool slot, running tools and doing file operations.
   **Episode slots full** tells you how long the episode cap was actually reached. **Tool
@@ -563,7 +693,7 @@ optional, and missing ones are reported as unavailable.
 
 | If you see | Do this, before freezing the settings |
 | --- | --- |
-| 0 successes | Simplify the tasks or use a stronger model. Comparisons are meaningless here |
+| 0 successes | Simplify the tasks, adjust the edit mode or budgets, or use a stronger model. Comparisons are meaningless here |
 | Every task solved | Add harder hidden tests |
 | Protocol errors over 20%, or many truncated replies | Raise the output cap or adjust the prompt |
 | Many `context_exhausted` stops | Lower `max_observation_chars` |
@@ -578,7 +708,7 @@ passes:
 
 | Check | Default |
 | --- | --- |
-| Comparison is valid | Protected settings, cohort and synthetic flag all match |
+| Comparison is valid | Protected settings, cohort and synthetic flag all match; both runs complete and drain-verified |
 | Candidate actually differs | Otherwise the result is an **A/A CALIBRATION**, not a decision |
 | Enough paired trials | `min_trials: 2` |
 | Pooled successes | No drop (`max_pooled_success_drop: 0`) |
@@ -593,7 +723,9 @@ label the choice "development selection". Validate the chosen variant with `pair
 
 Why both "enough trials" and "above noise": in testing, two runs of the **same**
 configuration showed a 7.5% "saving" from noise alone. Without these checks, that would
-have passed.
+have passed. At a fixed rate, a dollar reduction is exactly proportional to the
+measured-time reduction. A saving at an estimated reference rate shows the time saved;
+it doesn't prove a specific cloud bill.
 
 ---
 
@@ -604,14 +736,14 @@ Run every command as `uv run rollout-cost <command> …`.
 | Command | What it does |
 | --- | --- |
 | `validate-fixtures --config C` | Checks each task: starting code fails its public and hidden tests, the reference fix passes both |
-| `doctor --config C [--start-server]` | Checks the config, placeholders, tasks, CPU sets, executor, GPU, live exporter, model server, streaming and usage. `--start-server` launches the server with `server.start_command` for the checks |
-| `pin --revision SHA --vllm PATH [--profile lightning\|notebook] [--model-repo REPO] [--rate R --rate-source S] [--rehearsal]` | Writes resolved configs for the selected GPU profile |
+| `doctor --config C [--start-server]` | Checks the config, placeholders, tasks, CPU sets, executor, GPU, live exporter, model server, streaming, usage and request gauges. `--start-server` launches the server with `server.start_command` for the checks |
+| `pin --revision SHA --vllm PATH [--profile lightning\|notebook] [--model-repo REPO] [--rate R --rate-source S] [--rehearsal]` | Writes the pinned configs for a GPU session (called by the setup scripts) |
 | `run --config C [--split dev] [--label L]` | Runs one cohort under one config and writes `runs/<id>/` |
 | `sweep --config S` | Runs each variant in a sweep file, compares each to the baseline variant, writes `experiments/<sweep>-<time>/` with `selection.md` and `chosen.yaml` |
 | `paired --baseline A --candidate B [--trials N] [--name X] [--split dev]` | Runs alternating paired trials, writes `experiments/X.yaml` and `reports/X.md` with the decision |
 | `compare --baseline RUN --candidate RUN [--acceptance F]` | Compares two existing runs: transitions, per-task results, decision |
-| `report --run RUN` / `report --experiment F` | Re-renders a report from saved data |
-| `export [--db URL] [--reset]` | Loads runs, sweeps and experiments into PostgreSQL for Grafana |
+| `report --run RUN [--cost-config C]` / `report --experiment F` | Re-renders a report. With `--cost-config`, writes a revalued `report.estimated.md` |
+| `export [--db URL] [--cost-config C] [--runs-dir D] [--experiments-dir D] [--reset]` | Loads runs, sweeps and experiments into PostgreSQL: local Docker, or Neon via `$RC_DB_URL` |
 | `mock-server [--port 8000 --policy mixed …]` | Serves a mock vLLM endpoint (SYNTHETIC) |
 
 `paired` uses the `heldout` split by default, and that split is empty. Pass
@@ -619,7 +751,8 @@ Run every command as `uv run rollout-cost <command> …`.
 
 **Helper scripts** (`scripts/`):
 
-- `lightning-setup.sh`: GPU-host setup.
+- `notebook-setup.sh`: Colab/Kaggle setup, called by the notebook.
+- `lightning-setup.sh`: setup for a Lightning or other Linux GPU host.
 - `observability-native.sh`: Grafana and Prometheus without Docker.
 - `rehearse-lightning.sh`: rehearses the Lightning session in Docker.
 - `verify_dashboards.py`: runs every dashboard query through Grafana and reports empty
@@ -634,7 +767,7 @@ Run every command as `uv run rollout-cost <command> …`.
 | `episodes.jsonl` | One record per episode: outcome fields, timings and tokens |
 | `transcripts/` | The exact messages, requests and attempts for each episode |
 | `workspaces/` | The final code of each episode |
-| `summary.json`, `report.md` | Computed results |
+| `summary.json`, `report.md` (`report.estimated.md`) | Computed results, and an optional revalued report |
 | `server.log`, `gpu_samples.jsonl`, `server_metrics.jsonl` | Server output and telemetry samples |
 
 ---
@@ -664,21 +797,24 @@ comparisons with older runs, by design.
 uv run pytest                                                              # 2-3 minutes, no GPU or Docker needed
 RC_TEST_PG=postgresql://rollout:rollout@127.0.0.1:55432/rollout uv run pytest   # adds the PostgreSQL integration tests
 uv run python scripts/verify_dashboards.py                                 # every dashboard panel through Grafana
-scripts/rehearse-lightning.sh                                              # the Lightning session in an Ubuntu container
+bash scripts/rehearse-lightning.sh                                         # the Lightning session in an Ubuntu container
 ```
 
 The tests cover:
 
-- **Accounting:** billing rounding, unknown prices, zero successes.
+- **Accounting:** billing rounding, unknown prices, zero successes, estimated rates and
+  revaluation.
 - **Outcome logic:** every combination of the three outcome fields.
-- **Protocol:** truncated and malformed replies.
+- **Protocol:** truncated and malformed replies; whole-file mode and the JSON schemas.
 - **Workspace safety:** path escapes and symlinks.
 - **Admission:** the FIFO semaphore and cancellation.
 - **Timeouts:** cancelling an in-flight request, and the difference between a
   request-timeout and a wall-time stop.
 - **Context:** running out of context.
 - **Grading:** editing public tests doesn't count as a pass.
-- **Acceptance:** task swaps hidden by equal totals; A/A detection.
+- **Acceptance:** task swaps hidden by equal totals; A/A detection; run-validity checks.
+- **Server lifecycle:** restart and readiness.
+- **Notebook helpers:** GPU checks and archiving.
 - **Mock server:** streaming, retries, context overflow, client-disconnect aborts.
 - **Live exporter:** the metrics it serves mid-run.
 - **Compatibility checks:** dashboards, exporter, schema, mock server, pinned configs
@@ -686,6 +822,7 @@ The tests cover:
 
 | Environment | Verified |
 | --- | --- |
+| Colab T4 (real GPU) | Notebook setup, preflight and smoke runs with vLLM; results exported to Neon and visible on the Render dashboard |
 | Windows laptop with Docker Desktop | Full suite, Compose stack, all dashboards |
 | Ubuntu container without Docker (stand-in for a Lightning Studio) | Setup, `doctor`, runs, native observability stack, CPU pinning |
 | Linux to Windows | Run folders produced on Linux export and load on Windows unchanged |
@@ -697,13 +834,16 @@ The tests cover:
 ```text
 README.md                  this file
 pyproject.toml             package, CLI entry point, optional "dashboard" extra
-configs/                   local, baseline, sweep, lightning, mock-vllm, synthetic (see section 7)
+render.yaml                Render Blueprint for the public Grafana site
+configs/                   local, baseline, notebook, lightning, sweep, mock-vllm, synthetic (see section 7)
+notebooks/                 gpu_smoke_test.ipynb: the Colab/Kaggle GPU session
 fixtures/                  six tasks, splits.yaml, warm-up prompts
 graders/                   hidden tests and reference fixes (never visible to the agent)
 src/rollout_cost/
   cli.py                   all commands
   runner.py                run lifecycle: manifest, server prep, FIFO admission, grading, drain
-  harness.py               one episode: action protocol, budgets, timeouts, cancellation
+  harness.py               one episode: action protocol, edit modes, budgets, timeouts, cancellation
+  protocol.py              JSON actions and the per-request JSON schemas
   admission.py             FIFO request semaphore
   tools.py                 safe file actions, pinned tool pool, Docker and local executors
   grading.py               hidden-test grading on a clean copy
@@ -714,15 +854,16 @@ src/rollout_cost/
   live.py                  live Prometheus exporter
   spans.py                 events turned into timeline spans and concurrency series
   export.py, schema.sql    PostgreSQL export for Grafana
-  analysis.py, cost.py     summaries, comparisons, acceptance rule, cost accounting
+  analysis.py, cost.py     summaries, comparisons, acceptance rule, cost accounting and valuation
   report.py                Markdown reports
   contract.py              names and versions shared by exporter, schema and dashboards
-  pinning.py               session config generation
+  pinning.py               session config generation (lightning and notebook profiles)
+  notebook.py              Colab/Kaggle helpers: GPU check, logged commands, result archive
 observability/             Docker Compose stack, Prometheus and Grafana provisioning, dashboard generator
-scripts/                   Lightning setup, native observability, rehearsal, dashboard verification
+observability/render/      Grafana image, config and provisioning for the Render deployment
+scripts/                   notebook/Lightning setup, native observability, rehearsal, dashboard verification
 docker/                    test-runner image
-docs/DESIGN_DECISIONS.md   why each measurement and fairness rule is the way it is
-docs/LIGHTNING_RUNBOOK.md  the GPU session, step by step
+docs/                      NOTEBOOK_RUNBOOK, FREE_HOSTING, COST_ESTIMATES, LIGHTNING_RUNBOOK, DESIGN_DECISIONS
 tests/                     unit, end-to-end, compatibility and integration tests
 runs/, experiments/, reports/   generated output (runs/ and experiment folders are git-ignored)
 ```
@@ -731,21 +872,26 @@ runs/, experiments/, reports/   generated output (runs/ and experiment folders a
 
 ## 13. Status, limitations and scope
 
-| Works today (tested without a GPU) | Not done yet |
+| Works today | Not done yet |
 | --- | --- |
-| The six tasks with hidden tests; scripted and mock-vLLM runs end to end; separate episode and request caps; fixed, pinned tool CPU pool; timeouts with cancellation and drain checks; truncation and context handling; outcome fields; cost accounting with billing rounding; sweeps, paired trials, transition tables and acceptance with an A/A noise check; live exporter; PostgreSQL export; four Grafana dashboards; scripted Lightning setup and rehearsal | **A useful GPU task solve rate and validated cost savings** (initial T4 runs completed with zero solves); the Lightning Port Viewer; held-out tasks (the `heldout` split is empty); vLLM-setting ablations; replaying recorded workloads to isolate serving performance |
+| The six tasks with hidden tests; real T4 runs through the Colab notebook; scripted and mock-vLLM runs; separate episode and request caps; fixed, pinned tool CPU pool; timeouts with cancellation and drain checks; truncation and context handling; literal and whole-file edit modes; outcome fields; cost accounting with recorded or estimated rates; sweeps, paired trials, transition tables and acceptance with an A/A noise check; live exporter; PostgreSQL export; four Grafana dashboards, three of them hosted publicly on Render + Neon | **A useful solve rate and a validated cost saving.** The latest T4 smoke test solved 2 of 6; the pilot, A/A, sweep and paired validation haven't been run yet. Also: held-out tasks (the `heldout` split is empty); vLLM-setting ablations; replaying recorded workloads to isolate serving performance |
 
 **Limitations to keep in mind**
 
 - Six small tasks are a demonstration, not a benchmark. Results will be specific to one
   model, one GPU and these tasks.
+- Colab and Kaggle runtimes are shared, and their CPU, clocks and neighbours vary.
+  Measure the A/A noise floor there before trusting a difference.
+- The estimated T4 rate values the time; it isn't anyone's invoice.
 - The local executor (used when Docker isn't available) doesn't isolate generated code.
-  Only use it with your own fixtures.
+  Only use it with your own fixtures, in a fresh runtime.
 - The same seed doesn't guarantee identical model outputs when batching differs. That's
   why outcomes are always re-measured rather than assumed unchanged.
 - Saving GPU time saves money only if the allocation is released sooner, or you rent
   less. With hourly billing, or hardware you already own, the gain may be capacity rather
   than a smaller bill.
+- The public dashboard runs on free tiers. Render sleeps when idle, and Neon has monthly
+  compute and storage limits. Anything exported to the history database is public.
 
 **Out of scope:** multi-GPU or multi-node serving, model routing or quantization
 comparisons, adaptive scheduling during a run, and training. The tool generates and
@@ -753,8 +899,12 @@ measures agent trajectories, but it doesn't update model weights.
 
 **Further reading:**
 
+- [docs/NOTEBOOK_RUNBOOK.md](docs/NOTEBOOK_RUNBOOK.md): the Colab/Kaggle GPU session.
+- [docs/FREE_HOSTING.md](docs/FREE_HOSTING.md): the public dashboard on Render + Neon.
+- [docs/COST_ESTIMATES.md](docs/COST_ESTIMATES.md): the T4 reference rate and revaluing
+  runs.
+- [docs/LIGHTNING_RUNBOOK.md](docs/LIGHTNING_RUNBOOK.md): the Lightning L4 session.
 - [docs/DESIGN_DECISIONS.md](docs/DESIGN_DECISIONS.md): timeout boundaries, the cache
   procedure, the CPU budget, the acceptance rule, observability design, and the
   compatibility matrix.
-- [docs/LIGHTNING_RUNBOOK.md](docs/LIGHTNING_RUNBOOK.md): the GPU session.
 - [observability/README.md](observability/README.md): dashboards in depth.
