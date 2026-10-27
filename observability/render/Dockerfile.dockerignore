@@ -1,0 +1,13 @@
+# Keep credentials, run archives, model caches and the rest of the project out
+# of the Render build context. Only dashboard definitions and public config ship.
+**
+!observability/
+!observability/render/
+!observability/render/**
+!observability/grafana/
+!observability/grafana/dashboards/
+!observability/grafana/dashboards/history/
+!observability/grafana/dashboards/history/*.json
+**/.env
+**/.env.*
+**/*.tgz

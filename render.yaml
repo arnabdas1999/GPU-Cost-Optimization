@@ -1,0 +1,33 @@
+# Public, read-only history dashboards. No GPU, runner or Prometheus is deployed.
+# Setup and credential mapping: docs/FREE_HOSTING.md
+services:
+  - type: web
+    name: rollout-cost-dashboard
+    runtime: docker
+    plan: free
+    dockerfilePath: ./observability/render/Dockerfile
+    dockerContext: .
+    healthCheckPath: /api/health
+    envVars:
+      - key: GF_SECURITY_ADMIN_PASSWORD
+        generateValue: true
+      - key: GF_SECURITY_SECRET_KEY
+        generateValue: true
+      - key: GF_DATABASE_HOST
+        sync: false
+      - key: GF_DATABASE_NAME
+        value: neondb
+      - key: GF_DATABASE_USER
+        sync: false
+      - key: GF_DATABASE_PASSWORD
+        sync: false
+      - key: RC_HISTORY_HOST
+        sync: false
+      - key: RC_HISTORY_DATABASE
+        value: neondb
+      - key: RC_HISTORY_USER
+        value: grafana_reader
+      - key: RC_HISTORY_PASSWORD
+        sync: false
+      - key: GOMEMLIMIT
+        value: 384MiB

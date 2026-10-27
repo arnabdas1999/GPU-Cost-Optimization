@@ -310,6 +310,11 @@ bash scripts/observability-native.sh stop    # stop when done: a running server 
 Historical dashboards run on the laptop: copy the `runs/` folder home and `export` it.
 More detail is in [observability/README.md](observability/README.md).
 
+To share historical results at a public HTTPS URL without keeping your laptop on,
+follow the [free Render + Neon hosting guide](docs/FREE_HOSTING.md). The site URL
+stays the same when you import new runs. The deployment includes read-only viewing
+and persistent Grafana state; the GPU experiments continue running separately.
+
 ---
 
 ## 5. Running on a real GPU

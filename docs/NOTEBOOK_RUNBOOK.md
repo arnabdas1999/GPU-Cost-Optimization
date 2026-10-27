@@ -143,6 +143,10 @@ Skip paired validation if the sweep kept the baseline. Download the updated arch
 
 ## Troubleshooting
 
+For a public dashboard that stays available after Colab disconnects, see the
+[free hosting guide](FREE_HOSTING.md). Download the archive and import it into the
+hosted history database after each run; the Grafana site URL stays the same.
+
 - **No GPU / P100:** select a supported GPU runtime (T4 or newer). If unavailable, wait
   for capacity or use another supported host. The selected vLLM release requires compute
   capability 7.5 or higher.

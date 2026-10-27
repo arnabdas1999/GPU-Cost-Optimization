@@ -1,0 +1,24 @@
+apiVersion: 1
+datasources:
+  - name: Rollout history
+    uid: rc-postgres
+    type: grafana-postgresql-datasource
+    access: proxy
+    isDefault: true
+    editable: false
+    url: $RC_HISTORY_HOST
+    user: $RC_HISTORY_USER
+    jsonData:
+      database: $RC_HISTORY_DATABASE
+      sslmode: $RC_HISTORY_SSLMODE
+      tlsConfigurationMethod: file-path
+      sslRootCertFile: /etc/ssl/certs/ca-certificates.crt
+      postgresVersion: 1600
+      maxOpenConns: 5
+      maxIdleConns: 1
+      maxIdleConnsAuto: false
+      connMaxLifetime: 300
+      timescaledb: false
+    secureJsonData:
+      # Single expansion preserves dollar signs in passwords.
+      password: $RC_HISTORY_PASSWORD
