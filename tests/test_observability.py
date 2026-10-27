@@ -14,6 +14,7 @@ import socket
 import sys
 from pathlib import Path
 
+import httpx
 import pytest
 import yaml
 
@@ -67,6 +68,30 @@ def test_committed_dashboards_match_generator():
     for path, content in rendered.items():
         committed = (OBS / "grafana" / "dashboards" / path).read_text(encoding="utf-8")
         assert committed == content, f"{path} is stale: run `uv run python observability/build_dashboards.py`"
+
+
+@pytest.mark.parametrize("path,title,field,value", [
+    ("history/run-detail.json", "Data", "data", "Measured run"),
+    ("history/run-detail.json", "Success / valid / submitted", "outcome", "2 / 6 / 6"),
+    ("history/experiments.json", "Decision", "verdict", "A/A CALIBRATION"),
+    ("history/experiments.json", "Data", "data", "measured"),
+    ("history/experiments.json", "Kind / status", "kind", "paired"),
+])
+def test_stat_verification_detects_hidden_text_values(path, title, field, value):
+    """A successful SQL response must also select a field the stat can display."""
+    spec = importlib.util.spec_from_file_location("verify_dashboards", ROOT / "scripts/verify_dashboards.py")
+    verifier = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(verifier)
+    p = next(p for p in dashboards()[path]["panels"] if p["title"] == title)
+    response = {"results": {"A": {"frames": [{"schema": {"fields": [{"name": field, "type": "string"}]},
+                                             "data": {"values": [[value]]}}]}}}
+    with httpx.Client(transport=httpx.MockTransport(lambda _: httpx.Response(200, json=response)),
+                      base_url="http://grafana.test") as http:
+        assert verifier.query(http, p["targets"][0], {}, "now-1d", "now", panel=p) == ("ok", 1)
+        broken = json.loads(json.dumps(p))
+        broken["options"]["reduceOptions"]["fields"] = ""
+        status, rows = verifier.query(http, p["targets"][0], {}, "now-1d", "now", panel=broken)
+        assert status.startswith("ERROR stat panel has text data") and rows == 1
 
 
 def test_promql_uses_only_contract_and_known_vllm_metrics():

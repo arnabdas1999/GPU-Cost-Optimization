@@ -2,6 +2,7 @@
 
     uv run python scripts/verify_dashboards.py [--grafana http://127.0.0.1:3000] [--run RUN_ID] [--live-run RUN_ID]
 
+Checks the dashboard definitions deployed in Grafana, including stat field selection.
 History panels use the given run (default: the newest exported run) and every exported
 experiment/sweep; the time range is the run's window. Live panels use the newest run
 in Prometheus over the last 15 minutes. Exit code 1 if any query errors.
@@ -23,7 +24,8 @@ MAY_BE_EMPTY = {"GPU utilization", "GPU memory", "GPU memory used", "Warnings", 
                 "Cost so far", "Server requests and KV cache", "Prefix-cache hit rate", "Episode transitions (baseline → candidate)"}
 
 
-def query(http: httpx.Client, target: dict, variables: dict, time_from: str, time_to: str) -> tuple[str, int]:
+def query(http: httpx.Client, target: dict, variables: dict, time_from: str, time_to: str,
+          panel: dict | None = None) -> tuple[str, int]:
     t = json.loads(json.dumps(target))
     for key in ("expr", "rawSql"):
         if key in t:
@@ -35,7 +37,12 @@ def query(http: httpx.Client, target: dict, variables: dict, time_from: str, tim
     result = (body.get("results") or {}).get(t["refId"], {})
     if resp.status_code != 200 or result.get("error"):
         return f"ERROR {result.get('error') or body.get('message') or resp.status_code}", 0
-    rows = sum(len(f["data"]["values"][0]) if f.get("data", {}).get("values") else 0 for f in result.get("frames", []))
+    frames = result.get("frames", [])
+    rows = sum(len(f["data"]["values"][0]) if f.get("data", {}).get("values") else 0 for f in frames)
+    if rows and panel and panel["type"] == "stat" and not panel.get("options", {}).get("reduceOptions", {}).get("fields"):
+        fields = [field for frame in frames for field in frame.get("schema", {}).get("fields", [])]
+        if fields and not any(field.get("type") == "number" for field in fields):
+            return "ERROR stat panel has text data but selects only numeric fields", rows
     return "ok", rows
 
 
@@ -43,7 +50,7 @@ def check(http: httpx.Client, dash: dict, variables: dict, time_from: str, time_
     problems = []
     for panel in dash["panels"]:
         for target in panel.get("targets", []):
-            status, rows = query(http, target, variables, time_from, time_to)
+            status, rows = query(http, target, variables, time_from, time_to, panel=panel)
             mark = "ok" if status == "ok" and rows else ("empty" if status == "ok" else "FAIL")
             if mark == "FAIL" or (mark == "empty" and panel["title"] not in MAY_BE_EMPTY):
                 problems.append(f"{dash['uid']}/{panel['title']}/{target['refId']}: {status} rows={rows}")
@@ -57,13 +64,20 @@ def main() -> int:
     parser.add_argument("--grafana", default="http://127.0.0.1:3000")
     parser.add_argument("--user", default="admin")
     parser.add_argument("--password", default="admin")
+    parser.add_argument("--anonymous", action="store_true", help="check public dashboards without login credentials")
     parser.add_argument("--run")
     parser.add_argument("--live-run")
     parser.add_argument("--skip-live", action="store_true")
     parser.add_argument("--live-only", action="store_true", help="only the live dashboard (GPU-host Grafana)")
     args = parser.parse_args()
-    http = httpx.Client(base_url=args.grafana, auth=(args.user, args.password), timeout=30)
+    http = httpx.Client(base_url=args.grafana, auth=None if args.anonymous else (args.user, args.password), timeout=30)
     pg = {"type": "grafana-postgresql-datasource", "uid": "rc-postgres"}
+
+    def deployed(path: Path) -> dict:
+        uid = json.loads(path.read_text())["uid"]
+        response = http.get(f"/api/dashboards/uid/{uid}")
+        response.raise_for_status()
+        return response.json()["dashboard"]
 
     def sql_values(statement: str) -> list:
         resp = http.post("/api/ds/query", json={"queries": [{"refId": "A", "datasource": pg, "rawSql": statement,
@@ -79,15 +93,16 @@ def main() -> int:
     experiments = [] if args.live_only else sql_values("SELECT name FROM experiments ORDER BY name")
     experiments = experiments[0] if experiments else []
     for name in ([] if args.live_only else ("runs-overview", "run-detail")):
-        dash = json.loads((DASHBOARDS / "history" / f"{name}.json").read_text())
+        dash = deployed(DASHBOARDS / "history" / f"{name}.json")
         print(f"{dash['title']} (run {run})")
         problems += check(http, dash, {"run": run}, str(start_ms), str(end_ms))
-    dash = json.loads((DASHBOARDS / "history" / "experiments.json").read_text())
+    if experiments:
+        dash = deployed(DASHBOARDS / "history" / "experiments.json")
     for experiment in experiments:
         print(f"{dash['title']} ({experiment})")
         problems += check(http, dash, {"experiment": experiment}, "now-1y", "now")
     if not args.skip_live:
-        dash = json.loads((DASHBOARDS / "live" / "live-run.json").read_text())
+        dash = deployed(DASHBOARDS / "live" / "live-run.json")
         live_run = args.live_run
         if not live_run:
             resp = http.get("/api/datasources/uid/rc-prometheus/resources/api/v1/label/run_id/values").json()

@@ -70,12 +70,15 @@ def sql(query: str, fmt: str = "table", ref: str = "A") -> dict:
 def panel(layout: Layout, kind: str, title: str, targets: list[dict], w: int = 8, h: int = 8, *,
           unit: str | None = None, options: dict | None = None, custom: dict | None = None,
           mappings: list | None = None, overrides: list | None = None, description: str | None = None,
-          decimals: int | None = None, min_value: float | None = None, links: list | None = None) -> dict:
+          decimals: int | None = None, min_value: float | None = None, links: list | None = None,
+          no_value: str | None = None) -> dict:
     defaults: dict = {"custom": custom or {}, "mappings": mappings or []}
     if unit:
         defaults["unit"] = unit
     if decimals is not None:
         defaults["decimals"] = decimals
+    if no_value is not None:
+        defaults["noValue"] = no_value
     if min_value is not None:
         defaults["min"] = min_value
     if links:
@@ -95,7 +98,7 @@ def text(layout: Layout, title: str, content: str, w: int = 24, h: int = 3) -> d
 
 def stat(layout: Layout, title: str, target: dict, unit: str | None = None, w: int = 4, h: int = 4, **kw) -> dict:
     return panel(layout, "stat", title, [target], w, h, unit=unit,
-                 options={"reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": False},
+                 options={"reduceOptions": {"calcs": ["lastNotNull"], "fields": kw.pop("fields", ""), "values": False},
                           "colorMode": kw.pop("color_mode", "value"), "graphMode": "none",
                           "textMode": kw.pop("text_mode", "auto"), "justifyMode": "center"}, **kw)
 
@@ -271,12 +274,12 @@ def run_detail() -> dict:
     jump = "/d/rc-run-detail/rollout-cost-lab-run-detail?var-run=${__value.raw}&from=${__data.fields.start_ms}&to=${__data.fields.end_ms}"
     p = [
         stat(L, "Data", sql(f"""SELECT CASE WHEN synthetic THEN 'SYNTHETIC — ' || coalesce(synthetic_reason, '')
-                                ELSE 'Measured run' END AS data FROM runs {where}"""), w=8, h=3, text_mode="value",
+                                ELSE 'Measured run' END AS data FROM runs {where}"""), w=8, h=5, text_mode="value", fields="/.*/",
              color_mode="background", mappings=[{"type": "regex", "options": {"pattern": "SYNTHETIC.*", "result": {"color": "#8f3bb8"}}},
                                                {"type": "value", "options": {"Measured run": {"color": "#37872d"}}}]),
         table(L, "Run window (click to zoom the dashboard to this run)", sql(f"""
             SELECT run_id, config_name, model, gpu, executor, cache_reset, start_ms, end_ms FROM runs {where}"""),
-              w=16, h=3, overrides=[hidden("start_ms"), hidden("end_ms"),
+              w=16, h=5, overrides=[hidden("start_ms"), hidden("end_ms"),
                                     {"matcher": {"id": "byName", "options": "run_id"},
                                      "properties": [{"id": "links", "value": [{"title": "Zoom to run", "url": jump}]}]}]),
     ]
@@ -290,11 +293,13 @@ def run_detail() -> dict:
     p += [
         stat(L, "Allocated window", sql(f"SELECT window_s FROM runs {where}"), unit="s", decimals=1),
         stat(L, "Window cost", sql(f"SELECT window_cost FROM runs {where}"), unit="currencyUSD", decimals=4,
-             description="See Cost basis for reference-price estimates and their source. Empty when the rate is unknown."),
+             no_value="Rate unknown",
+             description="See Cost basis for reference-price estimates and their source. Unavailable when the rate is unknown."),
         stat(L, "Cost per success", sql(f"SELECT cost_per_success FROM runs {where}"), unit="currencyUSD", decimals=4,
-             description="Undefined (empty) with no successes or unknown price."),
+             no_value="Undefined",
+             description="Undefined with no successes or unknown price."),
         stat(L, "Success / valid / submitted", sql(f"""SELECT successes || ' / ' || valid_episodes || ' / ' || cohort_size
-                                                       AS outcome FROM runs {where}"""), text_mode="value"),
+                                                       AS outcome FROM runs {where}"""), text_mode="value", fields="/.*/"),
         stat(L, "Episode cap full", sql(f"SELECT steady_state_fraction FROM runs {where}"), unit="percentunit",
              description="Share of the window during which max_active_episodes slots were all occupied."),
         stat(L, "Tool share of episode time", sql(f"SELECT tool_time_fraction FROM runs {where}"), unit="percentunit"),
@@ -390,13 +395,13 @@ def experiments() -> dict:
         text(L, "Cost interpretation", "Cost values use recorded allocation rates or estimated equivalent rates. "
              "Open a run's Cost basis for the assumption and source. Reference valuations are estimates, not Colab charges.", h=3),
         stat(L, "Decision", sql("SELECT verdict FROM experiments WHERE name = '$experiment'"), w=8, h=4,
-             text_mode="value", color_mode="background", mappings=verdict_colors),
+             text_mode="value", fields="/.*/", color_mode="background", mappings=verdict_colors),
         stat(L, "Data", sql("""SELECT CASE WHEN synthetic THEN 'SYNTHETIC' ELSE 'measured' END AS data
-                               FROM experiments WHERE name = '$experiment'"""), w=4, h=4, text_mode="value",
+                               FROM experiments WHERE name = '$experiment'"""), w=4, h=4, text_mode="value", fields="/.*/",
              color_mode="background", mappings=[{"type": "value", "options": {"SYNTHETIC": {"color": "#8f3bb8"},
                                                                                "measured": {"color": "#37872d"}}}]),
         stat(L, "Kind / status", sql("SELECT kind || ' · ' || coalesce(status, '') AS kind FROM experiments WHERE name = '$experiment'"),
-             w=4, h=4, text_mode="value"),
+             w=4, h=4, text_mode="value", fields="/.*/"),
         stat(L, "Trials", sql("SELECT trials FROM experiments WHERE name = '$experiment'"), w=4, h=4),
         stat(L, "Window spread across trials", sql("SELECT window_spread_pct / 100 AS spread FROM experiments WHERE name = '$experiment'"),
              unit="percentunit", w=4, h=4, description="Noise floor: the pooled reduction must exceed this."),
